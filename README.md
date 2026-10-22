@@ -117,11 +117,11 @@ Neon 閒置時會自動暫停，第一個請求可能多幾百毫秒，屬正常
 
 | 服務名稱 | Root Directory | Build | Start | 變數 |
 | --- | --- | --- | --- | --- |
-| `ledger-web` | `apps/web` | `npm run build`（Railpack 自動偵測） | `npm start` | `LEDGER_API_URL=http://ledger.railway.internal:8080`（build 時寫入，改了要重新部署）；Healthcheck `/`；產生公開網域 |
+| `ledger-web` | `apps/web` | `npm run build`（Railpack 自動偵測） | `npm start` | `LEDGER_API_URL=http://ledger.railway.internal:8080`（build 時寫入，改了要重新部署）、`SITE_PASSWORD=…`；Healthcheck `/`；產生公開網域 |
 
 前端透過私有網路呼叫 `ledger`，所以 `ledger` 本身**不必**開公開網域；只要給 ChefCashFlow 與發票系統走私有網路即可。若暫時需要公開 `ledger` 的 `/docs` 來除錯，看完就關掉。
 
-**`AUTH_MODE=dev` 時任何拿到網址的人都是管理者**。在換成 Google 登入之前，`ledger-web` 的公開網址不要外流；Railway 可以先不產生公開網域，用 `railway run`／本機開發測試。
+**`AUTH_MODE=dev` 時任何進得了前端的人都是管理者**。所以在換成 Google 登入之前，`ledger-web` 一定要設 `SITE_PASSWORD`（帳號 `SITE_USER`，預設 `chefteng`）：瀏覽器會先跳出帳密視窗，頁面和 `/api/*` 都擋住。換成 Google 登入後再拿掉這兩個變數（兩者都用 Authorization 標頭，不能同時開）。
 
 **服務名稱 `ledger` 不要改**：它就是私有網路的主機名稱 `ledger.railway.internal`，ChefCashFlow 照合約呼叫這個位址。
 
