@@ -21,5 +21,6 @@ RUN useradd --create-home --uid 10001 appuser
 USER appuser
 
 EXPOSE 8080
-# 監聽 ::（IPv6）才收得到 Railway 私有網路的流量
-CMD ["sh", "-c", "uvicorn app.main:app --host :: --port ${PORT:-8080} --proxy-headers --forwarded-allow-ips='*'"]
+# HOST 預設 0.0.0.0（Render 等平台）；Railway 私有網路要收 IPv6，設 HOST=::
+# RUN_MIGRATIONS=true 時啟動前先跑 alembic（給沒有 pre-deploy 指令的方案用）
+CMD ["sh", "-c", "if [ \"$RUN_MIGRATIONS\" = \"true\" ]; then alembic upgrade head || exit 1; fi; exec uvicorn app.main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8080} --proxy-headers --forwarded-allow-ips='*'"]

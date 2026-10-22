@@ -101,13 +101,43 @@ Neon 閒置時會自動暫停，第一個請求可能多幾百毫秒，屬正常
 
 ---
 
+## 部署到 Render
+
+兩個 Web Service，都從 `natintw/chefpl` 建立，Region 選 **Singapore**。Render 免費／入門方案沒有私有網路，所以後端會有公開網址，靠兩道鎖保護：前端的密碼門（`SITE_PASSWORD`）、後端只收前端代理的請求（`FRONTEND_PROXY_KEY`）。
+
+**`ledger`（後端）**：Language 選 Docker，Root Directory `apps/api`（Dockerfile Path 維持 `./Dockerfile`），Health Check Path `/healthz`。
+
+```text
+DATABASE_URL=（Neon pooled，主機名稱有 -pooler）
+DATABASE_URL_DIRECT=（Neon direct，去掉 -pooler）
+RUN_MIGRATIONS=true          # 啟動前跑 alembic；付費方案可改用 Pre-Deploy Command：alembic upgrade head
+APP_ENV=staging
+USE_MOCKS=true
+AUTH_MODE=dev
+FRONTEND_PROXY_KEY=（一長串亂碼，跟前端 LEDGER_PROXY_KEY 一樣）
+```
+
+**`ledger-web`（前端）**：Language 選 Node，Root Directory `apps/web`，Build Command `npm ci && npm run build`，Start Command `npm start`，Health Check Path 留空（密碼門會讓 `/` 回 401）。
+
+```text
+LEDGER_API_URL=https://（ledger 服務的 onrender.com 網址，不要結尾斜線）
+LEDGER_PROXY_KEY=（同上那串亂碼）
+SITE_PASSWORD=（登入帳務台用；帳號 chefteng）
+```
+
+`LEDGER_API_URL` 在 build 時寫入，改了要重新部署（Manual Deploy → Clear build cache & deploy）。
+
+與現金流、發票系統對接時（它們在 Railway），跨平台只能走公開網址：`ledger` 要設 `INTEGRATION_MODE=public` 並啟用 HMAC 簽章（見《系統對接說明》第 3.4 節）。
+
+---
+
 ## 部署到 Railway
 
 同一個 Railway project（與發票系統、ChefCashFlow 同一個，才能走私有網路），區域選 Singapore。以本 repo 建立以下服務，**Root Directory 都設為 `apps/api`**，Railway 會用 `Dockerfile` 建置：
 
 | 服務名稱 | 啟動指令（Custom Start Command） | Cron（UTC） | 其他設定 |
 | --- | --- | --- | --- |
-| `ledger` | （使用 Dockerfile 預設） | — | Pre-deploy：`alembic upgrade head`；Healthcheck：`/healthz`；產生公開網域 |
+| `ledger` | （使用 Dockerfile 預設） | — | 變數 `HOST=::`（私有網路要 IPv6）；Pre-deploy：`alembic upgrade head`；Healthcheck：`/healthz` |
 | `ledger-worker-sync` | `python -m app.worker sync-invoices` | `5-59/15 * * * *` | 每 15 分鐘，錯開發票系統 |
 | `ledger-worker-monthly` | `python -m app.worker run-recurring` | `5 0 1 * *` | 台北每月 1 日 08:05 |
 | `ledger-worker-directory` | `python -m app.worker refresh-directory` | `40 * * * *` | 每小時 |

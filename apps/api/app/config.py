@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     google_oauth_client_id: str = ""
     allowed_email_domain: str = "chefteng.com"
     dev_default_user: str = "bill@chefteng.com"
+    # 後端有公開網址時（例如 Render 免費方案沒有私有網路），設這個值：/api/* 必須帶相同的 X-Proxy-Key，
+    # 也就是只有我們的前端代理進得來。前端那邊設 LEDGER_PROXY_KEY 為同一個值。
+    frontend_proxy_key: str = ""
     bootstrap_admins: str = Field(default="bill@chefteng.com", description="逗號分隔；第一次登入自動建立為 admin")
 
     @field_validator("database_url", "database_url_direct", "guard_database_url", mode="before")

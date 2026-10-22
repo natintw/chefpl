@@ -1,12 +1,14 @@
-"""FastAPI 進入點。Railway 啟動指令：uvicorn app.main:app --host :: --port $PORT"""
+"""FastAPI 進入點。啟動指令見 Dockerfile（HOST 預設 0.0.0.0；Railway 私有網路要設 HOST=::）。"""
 from __future__ import annotations
 
+import hmac
 import logging
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.config import get_settings
 from app.entry import integration, routes
 from app.errors import AppError
 
@@ -16,6 +18,16 @@ app = FastAPI(title="帳務損益系統 API", version="0.1.0",
               description="合約：contracts/openapi.yaml（使用者端）、contracts/integration-cashflow.yaml（系統端）")
 app.include_router(routes.router)
 app.include_router(integration.router)
+
+
+@app.middleware("http")
+async def proxy_key_gate(request: Request, call_next):
+    """設了 FRONTEND_PROXY_KEY 時，使用者端 API 只接受前端代理轉進來的請求。/integration 與 /healthz 不受影響。"""
+    key = get_settings().frontend_proxy_key
+    if key and request.url.path.startswith("/api/"):
+        if not hmac.compare_digest(request.headers.get("x-proxy-key", ""), key):
+            return JSONResponse({"code": "UNAUTHENTICATED", "message": "請從帳務台進入"}, status_code=401)
+    return await call_next(request)
 
 
 @app.exception_handler(AppError)
