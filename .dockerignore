@@ -1,0 +1,11 @@
+.git
+apps/web
+docs
+contracts
+**/.env
+**/.files
+**/tests
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+**/.pytest_cache
