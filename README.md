@@ -127,7 +127,7 @@ SITE_PASSWORD=（登入帳務台用；帳號 chefteng）
 
 `LEDGER_API_URL` 在 build 時寫入，改了要重新部署（Manual Deploy → Clear build cache & deploy）。
 
-與現金流、發票系統對接時（它們在 Railway），跨平台只能走公開網址：`ledger` 要設 `INTEGRATION_MODE=public` 並啟用 HMAC 簽章（見《系統對接說明》第 3.4 節）。
+與現金流、發票系統對接時（它們在 Railway），跨平台只能走公開網址：`ledger` 要設 `INTEGRATION_MODE=public` 並啟用 HMAC 簽章（見《系統對接說明》的公開網址模式）。
 
 ---
 
