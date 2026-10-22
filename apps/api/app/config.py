@@ -1,4 +1,5 @@
 """所有設定都從環境變數讀取（Railway 的 Variables）。每個欄位的用途見 .env.example。"""
+import re
 from functools import lru_cache
 
 from pydantic import Field, field_validator
@@ -75,8 +76,13 @@ class Settings(BaseSettings):
     @field_validator("database_url", "database_url_direct", "guard_database_url", mode="before")
     @classmethod
     def _psycopg_driver(cls, v: str | None) -> str | None:
-        """Neon 給的是 postgresql://…；SQLAlchemy 要 postgresql+psycopg://…，這裡自動轉換，直接貼上即可。"""
+        """Neon 給的是 postgresql://…；SQLAlchemy 要 postgresql+psycopg://…，這裡自動轉換，直接貼上即可。
+        也容忍常見的貼上格式：Neon 複製按鈕的 psql '…'、前後引號與空白、誤把「DATABASE_URL=」一起貼進來。"""
         if isinstance(v, str):
+            v = v.strip()
+            m = re.search(r"postgres(?:ql)?(?:\+\w+)?://[^\s'\"]+", v)
+            if m:
+                v = m.group(0)
             for prefix in ("postgres://", "postgresql://"):
                 if v.startswith(prefix):
                     return "postgresql+psycopg://" + v[len(prefix):]
