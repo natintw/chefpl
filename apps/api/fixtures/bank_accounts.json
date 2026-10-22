@@ -1,0 +1,17 @@
+[
+  {"id": "acc-3926", "company_id": "comp-1", "bank_name": "上海", "alias": "博竑上海3926營運帳戶", "last4": "3926"},
+  {"id": "acc-1790263460399", "company_id": "comp-1", "bank_name": "第一銀行", "alias": "博竑第一8068", "last4": "8068"},
+  {"id": "acc-1790326266384", "company_id": "comp-1", "bank_name": "第一銀行", "alias": "博竑第一銀行8068", "last4": "8068", "merged_into": "acc-1790263460399"},
+  {"id": "acc-1790325766850", "company_id": "comp-1790263075210", "bank_name": "上海", "alias": "博竑高雄0876", "last4": "0876"},
+  {"id": "acc-1790302409499", "company_id": "comp-1790263102815", "bank_name": "合庫", "alias": "鄧師傅合庫0237薪資用", "last4": "0237"},
+  {"id": "acc-1790317359053", "company_id": "comp-1790263102815", "bank_name": "上海", "alias": "鄧師傅上海2255營業收入", "last4": "2255"},
+  {"id": "acc-1790321611123", "company_id": "comp-1790263102815", "bank_name": "台銀", "alias": "鄧師傅台銀8858貸款還款用", "last4": "8858"},
+  {"id": "acc-1790323299208", "company_id": "comp-1790263124662", "bank_name": "上海", "alias": "名勝1720營業收入用", "last4": "1720"},
+  {"id": "acc-1790323488187", "company_id": "comp-1790263124662", "bank_name": "上海", "alias": "名勝3578貨款用", "last4": "3578"},
+  {"id": "acc-1790323788503", "company_id": "comp-1790263124662", "bank_name": "合庫", "alias": "名勝合庫0283薪資用", "last4": "0283"},
+  {"id": "acc-1790323950041", "company_id": "comp-1790263124662", "bank_name": "合庫", "alias": "名勝合庫9889", "last4": "9889"},
+  {"id": "acc-1790322240921", "company_id": "comp-1790322196308", "bank_name": "上海", "alias": "名勝文衡7092", "last4": "7092"},
+  {"id": "acc-1790322799603", "company_id": "comp-1790322196308", "bank_name": "上海", "alias": "名勝文衡2878", "last4": "2878"},
+  {"id": "acc-8249", "company_id": "comp-2", "bank_name": "玉山", "alias": "楊師傅8249", "last4": "8249"},
+  {"id": "acc-006-tcb", "company_id": "comp-2", "bank_name": "合作金庫", "alias": "楊師傅合庫營運與薪轉戶", "last4": "6820"}
+]

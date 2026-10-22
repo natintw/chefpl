@@ -1,0 +1,40 @@
+[project]
+name = "ledger-desk-api"
+version = "0.1.0"
+description = "帳務損益系統 API（博竑・鄧師傅集團）"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "sqlalchemy>=2.0.30",
+  "psycopg[binary]>=3.2",
+  "alembic>=1.13",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "python-multipart>=0.0.9",
+  "openpyxl>=3.1",
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# 真實串接才需要；USE_MOCKS=true 時不必安裝
+real = [
+  "anthropic>=0.40",
+  "boto3>=1.34",
+  "google-auth>=2.30",
+  "requests>=2.32",
+]
+dev = [
+  "pytest>=8.2",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

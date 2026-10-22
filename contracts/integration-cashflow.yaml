@@ -1,0 +1,795 @@
+openapi: 3.1.0
+info:
+  title: 帳務損益系統 ⇄ 現金流系統（ChefCashFlow）對接合約
+  version: 1.0.0-draft
+  description: |
+    帳務損益系統（ledger）與現金流系統（ChefCashFlow, cashflow）之間的系統對系統 API。
+    兩邊共同維護本檔；任何一方要改欄位，先改本檔、雙方確認後才改程式。
+
+    ## 誰提供、誰呼叫
+
+    | 端點 | 提供方 | 呼叫方 | 用途 |
+    | --- | --- | --- | --- |
+    | `GET /integration/v1/open-items` | ledger | cashflow | 讀未結清的應付、應收、預收，做銀行核對與資金預警 |
+    | `POST /integration/v1/settlements` | ledger | cashflow | 回寫核對結果（某張單據已付／已收） |
+    | `POST /integration/v1/bank-only-items` | ledger | cashflow | 送出銀行有、但對不到任何單據的收支 |
+    | `GET /integration/v1/balances` | ledger | cashflow | 讀 B 類餘額（借款本金、集團內往來…）做資金預警 |
+    | `GET /integration/v1/companies` | cashflow | ledger、invoice | 公司主檔 |
+    | `GET /integration/v1/stores` | cashflow | ledger、invoice | 門市主檔 |
+    | `GET /integration/v1/bank-accounts` | cashflow | ledger | 銀行帳戶主檔（顯示「從哪個帳戶付款」用） |
+
+    ## 共同規則
+
+    - **部署**：三個系統部署在同一個 Railway project 的同一個 environment，透過私有網路
+      `http://<服務名稱>.railway.internal:<PORT>` 互相呼叫；`/integration/*` 不對外公開。
+    - **身分驗證**：每一條「呼叫方 → 提供方」各一把金鑰，放在 `Authorization: Bearer <金鑰>`。
+      提供方只存金鑰的 SHA-256 雜湊，並限制該金鑰可用的端點。詳見《系統對接說明》第 3 節。
+    - **公開網址模式（備援）**：若任一方無法放進同一個 Railway project，必須改走公開網址，
+      並另加 `X-Timestamp`、`X-Signature` 兩個標頭（HMAC-SHA256，見《系統對接說明》3.4）。
+    - **冪等**：所有 POST 必須帶 `Idempotency-Key`。同一把 key 重送時，提供方回傳第一次的結果，不重複處理；
+      同一把 key 但內容不同 → `409 IDEMPOTENCY_CONFLICT`。key 保留 30 天。
+    - **金額**：一律新台幣整數元（不含小數），`amount` 永遠為正數，方向另以欄位表示。
+    - **日期**：`YYYY-MM-DD`，以台北時間的日期為準；時間戳記為 RFC 3339（例：`2026-09-28T10:15:00+08:00`）。
+    - **ID**：公司、門市、銀行帳戶 ID 一律使用現金流系統主檔的 ID（例：`comp-1790263124662`、`acc-1790323488187`）。
+    - **分頁**：列表端點使用不透明的 `cursor`；回傳 `next_cursor` 為 null 代表沒有下一頁。
+    - **時鐘**：雙方伺服器以 NTP 校時；HMAC 模式容許誤差 300 秒。
+
+servers:
+  - url: http://ledger.railway.internal:8080
+    description: 帳務損益系統（Railway 私有網路）。cashflow 提供的端點另見各路徑的 servers。
+  - url: https://ledger-api.example.chefteng.com
+    description: 備援：公開網址模式（需 HMAC），實際網域由 DevOps 決定
+
+security:
+  - serviceKey: []
+
+tags:
+  - name: 由帳務損益系統提供
+  - name: 由現金流系統提供
+  - name: 共用
+
+paths:
+  /integration/v1/health:
+    get:
+      tags: [共用]
+      summary: 健康檢查（雙方都要提供同一路徑）
+      security: []
+      responses:
+        '200':
+          description: 服務正常
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service, version]
+                properties:
+                  status: { type: string, enum: [ok, degraded] }
+                  service: { type: string, examples: [ledger] }
+                  version: { type: string, examples: ['1.0.0'] }
+
+  # =====================================================================
+  # 由帳務損益系統提供（cashflow 呼叫）
+  # =====================================================================
+  /integration/v1/open-items:
+    get:
+      tags: [由帳務損益系統提供]
+      operationId: listOpenItems
+      summary: 讀未結清的應付、應收、預收
+      description: |
+        回傳尚未完全結清（`settle_status` 為 open／partial）的單據。
+
+        建議用法：
+        - **完整同步**（每天一次）：不帶 `updated_after`，依 cursor 讀完全部。
+        - **增量同步**（每次核對前）：帶上次同步的 `as_of` 當 `updated_after`，只取有變動的單據；
+          回應的 `removed` 會列出已結清、作廢、或不再需要核對的單據 ID，請從本地快取刪除。
+
+        預估入帳（accrual）不會出現在這裡；它沒有要付的錢。
+      parameters:
+        - name: company_id
+          in: query
+          description: 不帶則回傳所有公司
+          schema: { type: string }
+          example: comp-1790263124662
+        - name: doc_type
+          in: query
+          schema:
+            type: array
+            items: { type: string, enum: [payable, receivable, advance_receipt] }
+          style: form
+          explode: false
+          example: [payable]
+        - name: due_before
+          in: query
+          description: 只取到期日在此日期（含）之前的單據；資金預警用
+          schema: { type: string, format: date }
+        - name: updated_after
+          in: query
+          description: 只取此時間之後新增或變動的單據
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [as_of, items, removed, next_cursor]
+                properties:
+                  as_of:
+                    type: string
+                    format: date-time
+                    description: 這次查詢的資料時間點；下次增量同步帶這個值
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/OpenItem' }
+                  removed:
+                    type: array
+                    description: 自 updated_after 之後已結清、作廢或轉為不需核對的單據 ID（完整同步時為空陣列）
+                    items: { type: string, format: uuid }
+                  next_cursor: { type: [string, 'null'] }
+              examples:
+                名勝文衡店應付:
+                  value:
+                    as_of: '2026-09-28T10:15:00+08:00'
+                    items:
+                      - document_id: 5b8f0c4e-1a2b-4c3d-9e8f-0a1b2c3d4e5f
+                        doc_type: payable
+                        company_id: comp-1790263124662
+                        store_ids: [store-ms-wenheng]
+                        counterparty:
+                          id: 0d9c8b7a-6f5e-4d3c-2b1a-0f9e8d7c6b5a
+                          name: 協昌果菜行
+                          tax_id: null
+                          keywords: [協昌]
+                          is_intercompany: false
+                          intercompany_company_id: null
+                        doc_date: '2026-08-31'
+                        period_keys: ['2026-08']
+                        due_date: '2026-09-30'
+                        payment_window: { from: '2026-09-25', to: '2026-10-10' }
+                        settle_amount: 41850
+                        settled_amount: 0
+                        outstanding: 41850
+                        invoice_nos: []
+                        has_invoice: true
+                        has_balance_lines: false
+                        source_kind: ap_sheet
+                        memo: 8 月貨款
+                        version: 3
+                        updated_at: '2026-09-02T09:00:00+08:00'
+                    removed: []
+                    next_cursor: null
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /integration/v1/settlements:
+    post:
+      tags: [由帳務損益系統提供]
+      operationId: postSettlements
+      summary: 回寫核對結果
+      description: |
+        現金流系統在銀行簿子中找到對應的付款或收款後呼叫。一次最多 200 筆。
+
+        - 逐筆處理，**部分成功也回 200**；被拒的筆數列在 `rejected`，其餘照常套用。
+        - 同一個 `document_id + cash_txn_id` 只會套用一次；重送會列在 `duplicates`，不算錯誤。
+        - `match_level = amount_only`（只有金額相符、對象待確認）**不會自動套用**，
+          而是進帳務損益系統的待確認，由會計決定；回應中列在 `queued_for_review`。
+        - `action = reverse`：現金流系統取消先前的配對（例如配錯），帳務損益系統會把那筆結清撤銷。
+        - 一筆銀行交易可以結清多張單據（月結合併付款），每張單據各送一筆，`amount` 為分配到該單據的金額，
+          同一 `cash_txn_id` 各筆 `amount` 加總不得超過銀行交易金額。
+        - 已結清單據所屬月份即使已關帳，也可以回寫；結清不影響損益。
+      parameters:
+        - $ref: '#/components/parameters/idempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 200
+                  items: { $ref: '#/components/schemas/SettlementItem' }
+            examples:
+              一筆付款結清一張應付:
+                value:
+                  items:
+                    - document_id: 5b8f0c4e-1a2b-4c3d-9e8f-0a1b2c3d4e5f
+                      cash_txn_id: txn-20260928-3578-0012
+                      cash_account_id: acc-1790323488187
+                      txn_date: '2026-09-28'
+                      amount: 41850
+                      bank_amount: 41850
+                      match_level: exact
+                      matched_by: auto
+                      action: apply
+                      note: null
+      responses:
+        '200':
+          description: 已處理（可能部分被拒）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SettlementResult' }
+              examples:
+                全部套用:
+                  value:
+                    applied: 1
+                    duplicates: 0
+                    queued_for_review: 0
+                    rejected: []
+                    documents:
+                      - document_id: 5b8f0c4e-1a2b-4c3d-9e8f-0a1b2c3d4e5f
+                        settle_status: settled
+                        settled_amount: 41850
+                        outstanding: 0
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /integration/v1/bank-only-items:
+    post:
+      tags: [由帳務損益系統提供]
+      operationId: postBankOnlyItems
+      summary: 送出銀行有、但對不到任何單據的收支
+      description: |
+        例：銀行手續費、貸款利息與還本、勞健保扣款、押金、股東往來、集團內調撥、營業稅、退款。
+        帳務損益系統收到後放進待確認，由會計建立已結清的單據（損益類別或 B 類別）。
+        一次最多 500 筆；同一個 `cash_txn_id` 重送只收一次（列在 `duplicates`）。
+
+        `suggested_kind` 是現金流系統依規則的初步判斷，**只是建議**，最後分類由帳務損益系統決定。
+        已被 settlements 套用到單據的銀行交易，不要再送到這裡。
+      parameters:
+        - $ref: '#/components/parameters/idempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items: { $ref: '#/components/schemas/BankOnlyItem' }
+            examples:
+              貸款利息與還本:
+                value:
+                  items:
+                    - cash_txn_id: txn-20260831-8858-0003
+                      cash_account_id: acc-1790321611123
+                      company_id: comp-1790263102815
+                      txn_date: '2026-08-31'
+                      direction: out
+                      amount: 12480
+                      bank_memo: 放款利息
+                      bank_note: null
+                      counterparty_name: null
+                      counterparty_account_no_masked: null
+                      suggested_kind: interest
+                      suggested_category_code: N01
+                    - cash_txn_id: txn-20260831-8858-0004
+                      cash_account_id: acc-1790321611123
+                      company_id: comp-1790263102815
+                      txn_date: '2026-08-31'
+                      direction: out
+                      amount: 50000
+                      bank_memo: 攤還本金
+                      bank_note: null
+                      counterparty_name: null
+                      counterparty_account_no_masked: null
+                      suggested_kind: loan_principal
+                      suggested_category_code: B02
+      responses:
+        '200':
+          description: 已收下
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [received, duplicates, rejected]
+                properties:
+                  received: { type: integer }
+                  duplicates: { type: integer }
+                  rejected:
+                    type: array
+                    items: { $ref: '#/components/schemas/ItemRejection' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /integration/v1/balances:
+    get:
+      tags: [由帳務損益系統提供]
+      operationId: getBalances
+      summary: 讀 B 類餘額與預收餘額
+      description: |
+        回傳截至 `as_of`（含當天）的 B 類餘額。符號規則見 schema `BalanceRow`。
+        資金預警最常用的是 B02 尚欠本金與 B05 集團內往來淨額。
+      parameters:
+        - name: company_id
+          in: query
+          schema: { type: string }
+        - name: as_of
+          in: query
+          required: true
+          schema: { type: string, format: date }
+          example: '2026-09-30'
+        - name: category_code
+          in: query
+          schema:
+            type: array
+            items: { type: string, enum: [B01, B02, B03, B04, B05, B06, B99] }
+          style: form
+          explode: false
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [as_of, opening_date, companies]
+                properties:
+                  as_of: { type: string, format: date }
+                  opening_date:
+                    type: string
+                    format: date
+                    description: 開帳日；之前沒有資料
+                  companies:
+                    type: array
+                    items:
+                      type: object
+                      required: [company_id, balances, advance_balance]
+                      properties:
+                        company_id: { type: string }
+                        balances:
+                          type: array
+                          items: { $ref: '#/components/schemas/BalanceRow' }
+                        advance_balance:
+                          type: integer
+                          description: 預收款尚未轉營收的金額（欠客人的貨），非 B 類，一併提供
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  # =====================================================================
+  # 由現金流系統提供（ledger、invoice 呼叫）
+  # =====================================================================
+  /integration/v1/companies:
+    servers:
+      - url: http://cashflow.railway.internal:8080
+        description: 現金流系統（Railway 私有網路）
+    get:
+      tags: [由現金流系統提供]
+      operationId: listCompanies
+      summary: 公司主檔
+      parameters:
+        - name: include_inactive
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Company' }
+              examples:
+                節錄:
+                  value:
+                    items:
+                      - id: comp-1
+                        code: BH-HQ
+                        name: 博竑食品有限公司
+                        tax_id: '42799631'
+                        parent_company_id: null
+                        is_active: true
+                        updated_at: '2026-09-24T15:17:06Z'
+                      - id: comp-1790263075210
+                        code: BH-BR
+                        name: 博竑食品有限公司高雄分公司
+                        tax_id: null
+                        parent_company_id: comp-1
+                        is_active: true
+                        updated_at: '2026-09-24T15:17:56Z'
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /integration/v1/stores:
+    servers:
+      - url: http://cashflow.railway.internal:8080
+        description: 現金流系統（Railway 私有網路）
+    get:
+      tags: [由現金流系統提供]
+      operationId: listStores
+      summary: 門市主檔
+      description: |
+        【待確認】現金流系統目前沒有門市主檔，需新增（開發文件 D8）。
+        門市 ID 一經建立不可改；停業的門市以 `is_active = false` 與 `closed_on` 表示，不刪除。
+      parameters:
+        - name: company_id
+          in: query
+          schema: { type: string }
+        - name: include_inactive
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Store' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /integration/v1/bank-accounts:
+    servers:
+      - url: http://cashflow.railway.internal:8080
+        description: 現金流系統（Railway 私有網路）
+    get:
+      tags: [由現金流系統提供]
+      operationId: listBankAccounts
+      summary: 銀行帳戶主檔
+      description: |
+        只回傳顯示用欄位，不回傳完整帳號。
+        【待確認】目前主檔有重複登錄的帳戶（例：博竑第一 8925、8068），請先清理，
+        並以 `merged_into` 指向保留的帳戶 ID，避免結清紀錄掛在兩個 ID 上。
+      parameters:
+        - name: company_id
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/BankAccount' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+components:
+  securitySchemes:
+    serviceKey:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: |
+        系統對系統金鑰。格式 `sk_<來源>_<目的>_<32 碼隨機字元>`，例：`sk_cashflow_ledger_xxxxxxxx…`。
+        每條連線一把，存在呼叫方的 Railway 環境變數；提供方只存 SHA-256 雜湊。
+
+  parameters:
+    idempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 呼叫方產生的唯一值（建議 UUID v4，或「批次 ID＋序號」）；重送時必須使用同一個值
+      schema: { type: string, minLength: 8, maxLength: 128 }
+      example: 2f0e4c7a-9b1d-4e3f-8a6b-5c4d3e2f1a0b
+    cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 500, default: 200 }
+
+  responses:
+    BadRequest:
+      description: 請求格式錯誤（JSON 解析失敗、缺必要欄位）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthenticated:
+      description: 沒有金鑰、金鑰錯誤、或 HMAC 驗證失敗
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: UNAUTHENTICATED, message: 金鑰無效 }
+    Forbidden:
+      description: 金鑰有效，但不允許呼叫這個端點
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: FORBIDDEN, message: 這把金鑰不能寫入 settlements }
+    IdempotencyConflict:
+      description: 同一把 Idempotency-Key 但內容不同
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: IDEMPOTENCY_CONFLICT, message: 此 Idempotency-Key 已用於不同內容 }
+    ValidationFailed:
+      description: 整批都不合格（例：超過筆數上限）。單筆錯誤不走這裡，而是列在 rejected
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unavailable:
+      description: 暫時無法服務；呼叫方以指數退避重試（1、2、4、8 分鐘，最多 5 次）
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: 建議幾秒後重試
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [BAD_REQUEST, UNAUTHENTICATED, FORBIDDEN, IDEMPOTENCY_CONFLICT, VALIDATION_FAILED, RATE_LIMITED, UNAVAILABLE]
+        message: { type: string, description: 中文說明，可直接記錄在對方系統的日誌 }
+        request_id: { type: string, description: 提供方的請求編號，追查問題時雙方對照用 }
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }
+
+    ItemRejection:
+      type: object
+      required: [index, code, message]
+      properties:
+        index: { type: integer, description: 在請求 items 中的位置（從 0 起算） }
+        document_id: { type: [string, 'null'], format: uuid }
+        cash_txn_id: { type: [string, 'null'] }
+        code:
+          type: string
+          enum:
+            - DOCUMENT_NOT_FOUND        # 單據不存在
+            - DOCUMENT_VOID             # 單據已作廢
+            - DOCUMENT_NOT_SETTLEABLE   # 單據類型不需結清（例：預估入帳）
+            - COMPANY_MISMATCH          # 銀行帳戶的公司與單據的公司不同
+            - TXN_OVER_ALLOCATED        # 同一筆銀行交易分配出去的金額超過交易金額
+            - SETTLEMENT_NOT_FOUND      # reverse 時找不到原配對
+            - INVALID_FIELD             # 欄位值不合法
+        message: { type: string }
+
+    Counterparty:
+      type: object
+      required: [id, name, keywords, is_intercompany]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        tax_id: { type: [string, 'null'], pattern: '^\d{8}$' }
+        keywords:
+          type: array
+          description: 銀行摘要或備註中辨識這個對象用的字（對應《分類規則》第 5 節的付款關鍵字）
+          items: { type: string }
+        bank_account_no_masked:
+          type: [string, 'null']
+          description: 對方收款帳號後 4 碼（若有）；現金流系統可優先用對方帳號比對
+        is_intercompany: { type: boolean }
+        intercompany_company_id:
+          type: [string, 'null']
+          description: 對象是集團內公司時，對應的公司 ID
+
+    OpenItem:
+      type: object
+      required: [document_id, doc_type, company_id, store_ids, counterparty, doc_date, period_keys,
+                 settle_amount, settled_amount, outstanding, invoice_nos, has_invoice,
+                 has_balance_lines, source_kind, version, updated_at]
+      properties:
+        document_id: { type: string, format: uuid }
+        doc_type:
+          type: string
+          enum: [payable, receivable, advance_receipt]
+          description: payable＝我們要付；receivable、advance_receipt＝我們要收
+        company_id: { type: string }
+        store_ids:
+          type: array
+          description: 明細涉及的門市；空陣列代表公司層級
+          items: { type: string }
+        counterparty: { $ref: '#/components/schemas/Counterparty' }
+        doc_date: { type: string, format: date }
+        period_keys:
+          type: array
+          description: 明細所屬的損益月份（可能跨月，例：7+8 月記帳費）
+          items: { type: string, pattern: '^\d{4}-\d{2}$' }
+        due_date: { type: [string, 'null'], format: date }
+        payment_window:
+          type: [object, 'null']
+          description: 依付款規則計算的核對窗口（例：到期日前 5 天到後 10 天），供配對時參考
+          properties:
+            from: { type: string, format: date }
+            to: { type: string, format: date }
+        settle_amount: { type: integer, minimum: 0, description: 應付／應收總額（含稅） }
+        settled_amount: { type: integer, minimum: 0 }
+        outstanding: { type: integer, description: settle_amount − settled_amount }
+        invoice_nos: { type: array, items: { type: string } }
+        has_invoice: { type: boolean }
+        has_balance_lines:
+          type: boolean
+          description: 含 B 類明細（例：設備款、押金）；資金預警可另列
+        source_kind:
+          type: string
+          enum: [invoice, ap_sheet, payroll, pos, platform, b2b, recurring, manual, advance, opening]
+        expected_delivery_date:
+          type: [string, 'null']
+          format: date
+          description: 只用於 advance_receipt
+        memo: { type: [string, 'null'] }
+        version: { type: integer, description: 單據版本；回寫時不需帶，僅供除錯 }
+        updated_at: { type: string, format: date-time }
+
+    SettlementItem:
+      type: object
+      required: [document_id, cash_txn_id, cash_account_id, txn_date, amount, match_level, matched_by, action]
+      properties:
+        document_id: { type: string, format: uuid }
+        cash_txn_id:
+          type: string
+          description: 現金流系統中銀行交易的唯一 ID，一經發出不可改
+        cash_account_id: { type: string, examples: [acc-1790323488187] }
+        txn_date: { type: string, format: date }
+        amount:
+          type: integer
+          minimum: 1
+          description: 分配到這張單據的金額
+        bank_amount:
+          type: integer
+          minimum: 1
+          description: 銀行交易的實際金額（匯費差額、合併付款時與 amount 不同）
+        match_level:
+          type: string
+          enum: [exact, fee_diff, partial, over, amount_only, manual]
+          description: |
+            exact＝完全相符；fee_diff＝差額 ≤ 100 元視為匯費（仍算結清）；partial＝部分付款；
+            over＝溢付或含其他款項；amount_only＝只有金額相符、對象待確認（進待確認，不自動套用）；
+            manual＝現金流系統上由人工配對
+        matched_by: { type: string, enum: [auto, manual] }
+        action: { type: string, enum: [apply, reverse] }
+        note: { type: [string, 'null'], maxLength: 500 }
+
+    SettlementResult:
+      type: object
+      required: [applied, duplicates, queued_for_review, rejected, documents]
+      properties:
+        applied: { type: integer }
+        duplicates: { type: integer }
+        queued_for_review: { type: integer }
+        rejected:
+          type: array
+          items: { $ref: '#/components/schemas/ItemRejection' }
+        documents:
+          type: array
+          description: 受影響單據套用後的最新結清狀態
+          items:
+            type: object
+            required: [document_id, settle_status, settled_amount, outstanding]
+            properties:
+              document_id: { type: string, format: uuid }
+              settle_status: { type: string, enum: [open, partial, settled, over] }
+              settled_amount: { type: integer }
+              outstanding: { type: integer }
+
+    BankOnlyItem:
+      type: object
+      required: [cash_txn_id, cash_account_id, company_id, txn_date, direction, amount, bank_memo]
+      properties:
+        cash_txn_id: { type: string }
+        cash_account_id: { type: string }
+        company_id: { type: string, description: 銀行帳戶所屬公司 }
+        txn_date: { type: string, format: date }
+        direction: { type: string, enum: [out, in] }
+        amount: { type: integer, minimum: 1 }
+        bank_memo: { type: string, description: 銀行簿子的「摘要」欄 }
+        bank_note: { type: [string, 'null'], description: 銀行簿子的「備註」欄 }
+        counterparty_name: { type: [string, 'null'] }
+        counterparty_account_no_masked: { type: [string, 'null'], description: 對方帳號（遮蔽後） }
+        counterparty_company_id:
+          type: [string, 'null']
+          description: 若對方帳號屬於集團內公司的銀行帳戶，填該公司 ID（集團內調撥判斷用）
+        suggested_kind:
+          type: [string, 'null']
+          enum: [bank_fee, interest, loan_principal, loan_drawdown, payroll, insurance, deposit,
+                 shareholder, intercompany_fund, business_tax, refund, other, null]
+        suggested_category_code:
+          type: [string, 'null']
+          description: 對應帳務損益系統的管理類別代碼（例：N01、B02、B05）
+        balance_after: { type: [integer, 'null'], description: 交易後帳戶餘額（若有） }
+
+    BalanceRow:
+      type: object
+      required: [category_code, category_name, amount]
+      properties:
+        category_code: { type: string, enum: [B01, B02, B03, B04, B05, B06, B99] }
+        category_name: { type: string, examples: [借款本金] }
+        amount:
+          type: integer
+          description: |
+            明細加總（含期初）。正數＝錢流出累計多於流入。
+            B01 正數＝未折舊資產；B02 負數＝尚欠本金；B03 正數＝在外押金；
+            B04 負數＝公司欠股東；B05 正數＝對方欠我們（我們撥出較多）。
+        by_counterparty:
+          type: array
+          description: B02、B05 依對象（銀行或集團內公司）拆開
+          items:
+            type: object
+            required: [counterparty_name, amount]
+            properties:
+              counterparty_id: { type: [string, 'null'], format: uuid }
+              counterparty_company_id: { type: [string, 'null'] }
+              counterparty_name: { type: string }
+              amount: { type: integer }
+
+    Company:
+      type: object
+      required: [id, code, name, is_active, updated_at]
+      properties:
+        id: { type: string, examples: [comp-1790263124662] }
+        code: { type: string, examples: [MS] }
+        name: { type: string, examples: [名勝食品有限公司] }
+        tax_id: { type: [string, 'null'], pattern: '^\d{8}$' }
+        parent_company_id:
+          type: [string, 'null']
+          description: 分公司指向總公司
+        is_active: { type: boolean }
+        updated_at: { type: string, format: date-time }
+
+    Store:
+      type: object
+      required: [id, company_id, code, name, is_active, updated_at]
+      properties:
+        id: { type: string, examples: [store-ms-wenheng] }
+        company_id: { type: string }
+        code: { type: string, examples: [MS-WH] }
+        name: { type: string, examples: [文衡店] }
+        kind:
+          type: string
+          enum: [restaurant, counter, factory, office]
+          description: 門市、百貨專櫃、工廠、辦公室
+        opened_on: { type: [string, 'null'], format: date }
+        closed_on: { type: [string, 'null'], format: date }
+        is_active: { type: boolean }
+        updated_at: { type: string, format: date-time }
+
+    BankAccount:
+      type: object
+      required: [id, company_id, bank_name, alias, last4, is_active]
+      properties:
+        id: { type: string, examples: [acc-1790323488187] }
+        company_id: { type: string }
+        bank_name: { type: string, examples: [上海] }
+        alias: { type: string, examples: [名勝3578貨款用] }
+        last4: { type: string, pattern: '^\d{4}$' }
+        is_active: { type: boolean }
+        merged_into:
+          type: [string, 'null']
+          description: 重複登錄清理後，被合併的帳戶指向保留的帳戶 ID

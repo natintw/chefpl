@@ -1,0 +1,9 @@
+[
+  {"id": "store-bh-factory", "company_id": "comp-1", "code": "BH-FAC", "name": "工廠", "kind": "factory"},
+  {"id": "store-bh-counter", "company_id": "comp-1790263075210", "code": "BH-CTR", "name": "百貨專櫃［暫定］", "kind": "counter"},
+  {"id": "store-ms-wenheng", "company_id": "comp-1790322196308", "code": "MS-WH", "name": "文衡店", "kind": "restaurant"},
+  {"id": "store-ms-main", "company_id": "comp-1790263124662", "code": "MS-01", "name": "名勝門市［暫定］", "kind": "restaurant"},
+  {"id": "store-ct-01", "company_id": "comp-1790263102815", "code": "CT-01", "name": "門市一［暫定］", "kind": "restaurant"},
+  {"id": "store-ct-02", "company_id": "comp-1790263102815", "code": "CT-02", "name": "門市二［暫定］", "kind": "restaurant"},
+  {"id": "store-ys-01", "company_id": "comp-2", "code": "YS-01", "name": "楊師傅門市［暫定］", "kind": "restaurant"}
+]

@@ -1,0 +1,31 @@
+[
+  {
+    "event_id": "7c1e2d3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f",
+    "sequence": 1,
+    "event_type": "confirmed",
+    "occurred_at": "2026-09-05T14:32:10+08:00",
+    "actor": "accountant@chefteng.com",
+    "invoice": {
+      "id": "3a2b1c0d-9e8f-4a7b-6c5d-4e3f2a1b0c9d",
+      "company_id": "comp-1",
+      "store_id": "store-bh-factory",
+      "direction": "purchase",
+      "invoice_no": "CB14993775",
+      "invoice_date": "2026-08-21",
+      "invoice_period": "2026-08",
+      "invoice_format": "cash_register",
+      "seller_tax_id": "12345675",
+      "seller_name": "富霖印刷",
+      "buyer_tax_id": "42799631",
+      "sales_amount": 51700,
+      "tax_amount": 2585,
+      "total_amount": 54285,
+      "tax_type": "taxable",
+      "deductible": true,
+      "status": "archived",
+      "extraction_method": "ai",
+      "archived_path": "發票彙整/BH-HQ_博竑食品/工廠/2026-07-08期/CB14993775.jpg",
+      "version": 4
+    }
+  }
+]

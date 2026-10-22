@@ -1,0 +1,291 @@
+openapi: 3.1.0
+info:
+  title: 發票系統 → 帳務損益系統 對接合約
+  version: 1.0.0-draft
+  description: |
+    發票自動辨識入帳系統（invoice）提供給帳務損益系統（ledger）的系統對系統 API。
+    方向固定為「ledger 主動拉取」：發票系統不呼叫 ledger，ledger 掛掉也不影響發票系統運作。
+
+    ## 運作方式：事件游標（outbox）
+
+    1. 發票系統每當一張發票的狀態改變（確認、修改、作廢、重開），就在自己的 `invoice_events` 表寫一筆事件，
+       並給一個只增不減的序號 `sequence`。寫事件與改發票必須在**同一個資料庫交易**內完成（outbox pattern），
+       確保不會有「發票改了、事件沒寫」的情況。
+    2. ledger 每 15 分鐘（Railway Cron）帶著上次處理到的 `cursor` 呼叫 `GET /api/v1/integration/invoice-events`，
+       依序處理；**處理成功後才前進游標**。
+    3. 事件內帶的是發票在事件當下的**完整快照**，ledger 不需要再回頭查發票明細。
+    4. 同一張發票可能有多筆事件；ledger 以 `sequence` 順序處理，最後一筆為準。
+
+    ## 共同規則
+
+    與《帳務損益系統 ⇄ 現金流系統對接合約》相同：Railway 私有網路、Bearer 金鑰（`sk_ledger_invoice_…`）、
+    金額為整數元、日期為台北時間 `YYYY-MM-DD`、公司與門市 ID 使用現金流系統主檔的 ID。
+
+    ## 發票系統需配合的調整
+
+    - `invoice.stores` 新增欄位 `directory_store_id`，存現金流系統門市主檔的 ID；事件中的 `store_id` 送這個值。
+    - 新增 `invoice_events` 表（DDL 見《系統對接說明》附錄 B）。
+    - 事件保留至少 180 天；超過保留期的 cursor 回 `410 CURSOR_EXPIRED`。
+
+servers:
+  - url: http://invoice.railway.internal:8080
+    description: 發票系統（Railway 私有網路）
+  - url: https://invoice-api.example.chefteng.com
+    description: 備援：公開網址模式（需 HMAC），實際網域由 DevOps 決定
+
+security:
+  - serviceKey: []
+
+paths:
+  /api/v1/integration/health:
+    get:
+      summary: 健康檢查
+      security: []
+      responses:
+        '200':
+          description: 服務正常
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service, version]
+                properties:
+                  status: { type: string, enum: [ok, degraded] }
+                  service: { type: string, examples: [invoice] }
+                  version: { type: string }
+
+  /api/v1/integration/invoice-events:
+    get:
+      operationId: listInvoiceEvents
+      summary: 依游標讀取發票事件
+      description: |
+        - 不帶 `cursor`：從最早一筆事件開始（第一次同步或重建時使用）。
+        - 回傳的事件依 `sequence` 由小到大排序。
+        - `has_more = true` 時，立即用 `next_cursor` 再讀下一頁；`false` 時，保存 `next_cursor` 供下一輪使用。
+        - 只回傳**已提交**的事件；不會出現序號跳號後又補回的情況（實作上以交易提交後才可見的序號，或延遲 5 秒讀取避免）。
+      parameters:
+        - name: cursor
+          in: query
+          description: 上一頁回傳的 next_cursor；不透明字串，不要自行解析
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 200 }
+        - name: company_id
+          in: query
+          description: 只取某家公司的事件（除錯用；正式同步不帶）
+          schema: { type: string }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, next_cursor, has_more]
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: '#/components/schemas/InvoiceEvent' }
+                  next_cursor:
+                    type: string
+                    description: 即使 events 為空也會回傳（等於傳入的 cursor）
+                  has_more: { type: boolean }
+              examples:
+                一筆確認事件:
+                  value:
+                    events:
+                      - event_id: 7c1e2d3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f
+                        sequence: 10452
+                        event_type: confirmed
+                        occurred_at: '2026-09-05T14:32:10+08:00'
+                        actor: accountant@chefteng.com
+                        invoice:
+                          id: 3a2b1c0d-9e8f-4a7b-6c5d-4e3f2a1b0c9d
+                          company_id: comp-1
+                          store_id: store-bh-factory
+                          direction: purchase
+                          invoice_no: CB14993775
+                          invoice_date: '2026-08-21'
+                          invoice_period: '2026-08'
+                          invoice_format: cash_register
+                          seller_tax_id: '12345675'
+                          seller_name: 富霖印刷
+                          buyer_tax_id: '42799631'
+                          sales_amount: 51700
+                          tax_amount: 2585
+                          total_amount: 54285
+                          tax_type: taxable
+                          deductible: true
+                          status: archived
+                          extraction_method: ai
+                          archived_path: 發票彙整/BH-HQ_博竑食品/工廠/2026-07-08期/CB14993775.jpg
+                          version: 4
+                    next_cursor: eyJzIjoxMDQ1Mn0
+                    has_more: false
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '410':
+          description: cursor 已超過保留期
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { code: CURSOR_EXPIRED, message: 游標已過期，請不帶 cursor 重新完整同步（ledger 以來源唯一鍵去重，不會重複入帳） }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/integration/invoices/{id}/image:
+    get:
+      operationId: getInvoiceImage
+      summary: 取得單張發票影像的短效連結
+      description: |
+        ledger 在「單據側欄 → 原始憑證」時呼叫，再把連結交給使用者瀏覽器開啟。
+        連結 10 分鐘內有效；ledger 不得快取或轉存影像。
+        使用者是否有權看這張發票，由 ledger 依自己的權限判斷（同一公司、同一門市範圍）。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url, expires_at]
+                properties:
+                  url: { type: string, format: uri }
+                  expires_at: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404':
+          description: 發票不存在，或尚未歸檔
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/integration/pending-count:
+    get:
+      operationId: getPendingCount
+      summary: 某公司某月還有幾張發票沒處理完（月結檢查用）
+      description: |
+        `month` 為**發票日期所屬的月份**（例：2026-08 代表發票日期 8/1–8/31），不是發票的兩個月期別。
+        讀不出內容、尚未歸屬到發票的原檔無法判斷月份，以「上傳日期所屬月份」計入 `unreadable_files`。
+      parameters:
+        - name: company_id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: month
+          in: query
+          required: true
+          schema: { type: string, pattern: '^\d{4}-\d{2}$' }
+          example: '2026-08'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [company_id, month, needs_review, archive_failed, unreadable_files, processing_files, as_of]
+                properties:
+                  company_id: { type: string }
+                  month: { type: string }
+                  needs_review: { type: integer, description: 待複核發票張數 }
+                  archive_failed: { type: integer, description: 已確認但歸檔失敗、等待重試 }
+                  unreadable_files: { type: integer, description: 讀不出內容、等待人工的原檔數 }
+                  processing_files: { type: integer, description: 已上傳、尚未處理完的原檔數 }
+                  as_of: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+components:
+  securitySchemes:
+    serviceKey:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: 系統對系統金鑰 `sk_ledger_invoice_<32 碼隨機字元>`；發票系統只存 SHA-256 雜湊
+
+  responses:
+    Unauthenticated:
+      description: 沒有金鑰、金鑰錯誤、或 HMAC 驗證失敗
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: 金鑰有效，但不允許呼叫這個端點
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unavailable:
+      description: 暫時無法服務；ledger 下一輪排程再試，游標不前進
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CURSOR_EXPIRED, UNAVAILABLE]
+        message: { type: string }
+        request_id: { type: string }
+
+    InvoiceEvent:
+      type: object
+      required: [event_id, sequence, event_type, occurred_at, invoice]
+      properties:
+        event_id: { type: string, format: uuid }
+        sequence: { type: integer, format: int64, description: 只增不減；ledger 以此排序與去重 }
+        event_type:
+          type: string
+          enum: [confirmed, updated, voided, reopened]
+          description: |
+            confirmed＝會計確認或自動確認（狀態進入 confirmed／archived），ledger 建立應付；
+            updated＝已確認的發票欄位被修改（例：金額、統編），ledger 更新未結清的應付，已結清的進待確認；
+            voided＝作廢或標為非發票，ledger 作廢對應應付（已有付款紀錄則進待確認）；
+            reopened＝會計重開複核，ledger 將應付轉回草稿，等下一次 confirmed。
+            歸檔成功、歸檔失敗等不影響帳務的狀態變化**不發事件**。
+        occurred_at: { type: string, format: date-time }
+        actor:
+          type: [string, 'null']
+          description: 操作者 email；自動確認時為 null
+        invoice: { $ref: '#/components/schemas/InvoiceSnapshot' }
+
+    InvoiceSnapshot:
+      type: object
+      required: [id, company_id, store_id, direction, invoice_no, invoice_date, seller_tax_id, seller_name,
+                 buyer_tax_id, sales_amount, tax_amount, total_amount, tax_type, status, extraction_method, version]
+      properties:
+        id: { type: string, format: uuid }
+        company_id: { type: string, description: 現金流系統公司主檔 ID }
+        store_id: { type: string, description: 現金流系統門市主檔 ID（invoice.stores.directory_store_id） }
+        direction: { type: string, enum: [purchase, sales], description: v1 只會出現 purchase }
+        invoice_no: { type: string, pattern: '^[A-Z]{2}\d{8}$' }
+        invoice_date: { type: string, format: date }
+        invoice_period:
+          type: string
+          pattern: '^\d{4}-(02|04|06|08|10|12)$'
+          description: 發票兩個月期別，以雙月表示（2026-08＝7–8 月期）
+        invoice_format: { type: string, enum: [e_invoice, cash_register, manual_triplicate] }
+        seller_tax_id: { type: string, pattern: '^\d{8}$' }
+        seller_name: { type: string }
+        buyer_tax_id: { type: string, pattern: '^\d{8}$' }
+        sales_amount: { type: integer, description: 銷售額（未稅） }
+        tax_amount: { type: integer }
+        total_amount: { type: integer, description: 總計（含稅） }
+        tax_type: { type: string, enum: [taxable, zero_rated, exempt] }
+        deductible: { type: [boolean, 'null'], description: 進項可否扣抵，會計判定；未判定為 null }
+        status: { type: string, enum: [confirmed, archived, archive_failed, needs_review, void] }
+        extraction_method: { type: string, enum: [qr, ai, manual] }
+        archived_path: { type: [string, 'null'] }
+        version: { type: integer }

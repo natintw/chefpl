@@ -1,0 +1,8 @@
+[
+  {"id": "comp-1", "code": "BH-HQ", "name": "博竑食品有限公司", "tax_id": "42799631", "parent_company_id": null},
+  {"id": "comp-1790263075210", "code": "BH-BR", "name": "博竑食品有限公司高雄分公司", "tax_id": null, "parent_company_id": "comp-1"},
+  {"id": "comp-1790263102815", "code": "CHFT", "name": "鄧師傅滷味有限公司", "tax_id": "86058536", "parent_company_id": null},
+  {"id": "comp-1790263124662", "code": "MS", "name": "名勝食品有限公司", "tax_id": "29005335", "parent_company_id": null},
+  {"id": "comp-1790322196308", "code": "MS-BRH", "name": "名勝文衡分公司", "tax_id": null, "parent_company_id": "comp-1790263124662"},
+  {"id": "comp-2", "code": "YSF-OP", "name": "楊師傅有限公司", "tax_id": "86061743", "parent_company_id": null}
+]
