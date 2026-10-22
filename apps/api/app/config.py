@@ -90,7 +90,36 @@ class Settings(BaseSettings):
 
     @property
     def migration_url(self) -> str:
-        return self.database_url_direct or self.database_url
+        """優先用 direct；direct 沒設或不是合法連線字串時退回 DATABASE_URL（並在 log 說明）。"""
+        if self.database_url_direct and _parseable(self.database_url_direct):
+            return self.database_url_direct
+        if self.database_url_direct:
+            print("[config] DATABASE_URL_DIRECT 不是合法的連線字串，遷移改用 DATABASE_URL", flush=True)
+        return self.database_url
+
+
+def _parseable(url: str) -> bool:
+    from sqlalchemy.engine import make_url
+    try:
+        make_url(url)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def describe_url(url: str | None) -> str:
+    """給 log 看的遮罩摘要：只露出格式、主機、資料庫名，不露密碼。"""
+    if not url:
+        return "（未設定）"
+    from sqlalchemy.engine import make_url
+    try:
+        u = make_url(url)
+        return f"格式正確 driver={u.drivername} user={u.username} host={u.host} db={u.database} 密碼={'有' if u.password else '無'}"
+    except Exception:  # noqa: BLE001
+        flags = {"開頭是 postgres": url.lstrip().lower().startswith(("postgres", "psql")), "含 ://": "://" in url,
+                 "含 @": "@" in url, "含中文": any("\u4e00" <= ch <= "\u9fff" for ch in url), "含換行": "\n" in url,
+                 "含引號": any(q in url for q in "'\"")}
+        return f"無法解析：長度 {len(url)}，" + "，".join(f"{k} {'是' if v else '否'}" for k, v in flags.items())
 
 
 @lru_cache

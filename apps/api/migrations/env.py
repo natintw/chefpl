@@ -2,13 +2,17 @@
 from alembic import context
 from sqlalchemy import create_engine, pool
 
-from app.config import get_settings
+from app.config import describe_url, get_settings
 
 config = context.config
 
 
 def run_migrations_online() -> None:
-    url = config.attributes.get("url") or get_settings().migration_url
+    st = get_settings()
+    if not config.attributes.get("url"):
+        print(f"[migrate] DATABASE_URL：{describe_url(st.database_url)}", flush=True)
+        print(f"[migrate] DATABASE_URL_DIRECT：{describe_url(st.database_url_direct)}", flush=True)
+    url = config.attributes.get("url") or st.migration_url
     connectable = create_engine(url, poolclass=pool.NullPool, connect_args={"prepare_threshold": None})
     with connectable.connect() as connection:
         context.configure(
