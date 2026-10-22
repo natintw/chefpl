@@ -26,9 +26,14 @@ ledger-desk/
 │  ├─ migrations/            # 0001 結構、0002 類別與關鍵字種子
 │  ├─ fixtures/              # Mock 用的公司、門市、銀行帳戶、發票事件
 │  ├─ scripts/neon_roles.sql # Neon 帳號權限
+│  ├─ scripts/seed_demo.py   # 示範資料（只在本機／staging 用）
 │  ├─ tests/                 # pytest（27 個案例）
 │  ├─ Dockerfile
 │  └─ .env.example
+├─ apps/web/                 # Next.js 15 帳務台（8 個頁面＋單據抽屜，對應 Design 畫布 S1–S9）
+│  ├─ app/                   # /、/pl、/todo、/payables、/documents/new、/imports、/review、/close
+│  ├─ components/            # Shell、篩選器、單據抽屜、共用元件（Tag、Skeleton、Empty、Toast…）
+│  └─ lib/                   # API client（useApi）、型別、金額格式
 ├─ contracts/                # 與其他系統的合約（OpenAPI 3.1）
 └─ docs/                     # 開發文件、對接說明
 ```
@@ -58,6 +63,24 @@ uvicorn app.main:app --reload --port 8080
 export TEST_DATABASE_URL=postgresql+psycopg://postgres@localhost:5432/ledger_test
 pytest
 ```
+
+示範資料（兩個月的單據、一次匯入、幾筆現金流回寫；金額全是虛構）：
+
+```bash
+# 伺服器的 INTEGRATION_CLIENTS 裡放 cashflow 金鑰 demo-key 的 SHA-256，才會一併建立結清與銀行獨有項目
+API=http://localhost:8080 CASHFLOW_KEY=demo-key python scripts/seed_demo.py 2026-09
+python -m app.worker sync-invoices
+```
+
+前端：
+
+```bash
+cd apps/web
+npm install
+LEDGER_API_URL=http://localhost:8080 npm run dev     # http://localhost:3000
+```
+
+前端所有 `/api/*` 請求由 Next.js 轉給 `LEDGER_API_URL`，瀏覽器只跟同一個網域講話，不需要 CORS。dev 模式下可在瀏覽器 console 執行 `localStorage.setItem("ledger.devUser", "某人@chefteng.com")` 切換使用者。
 
 ---
 
@@ -89,6 +112,16 @@ Neon 閒置時會自動暫停，第一個請求可能多幾百毫秒，屬正常
 | `ledger-worker-monthly` | `python -m app.worker run-recurring` | `5 0 1 * *` | 台北每月 1 日 08:05 |
 | `ledger-worker-directory` | `python -m app.worker refresh-directory` | `40 * * * *` | 每小時 |
 | `ledger-files` | （Storage Bucket） | — | 匯入原檔、收據照片 |
+
+另外建一個前端服務：
+
+| 服務名稱 | Root Directory | Build | Start | 變數 |
+| --- | --- | --- | --- | --- |
+| `ledger-web` | `apps/web` | `npm run build`（Railpack 自動偵測） | `npm start` | `LEDGER_API_URL=http://ledger.railway.internal:8080`（build 時寫入，改了要重新部署）；Healthcheck `/`；產生公開網域 |
+
+前端透過私有網路呼叫 `ledger`，所以 `ledger` 本身**不必**開公開網域；只要給 ChefCashFlow 與發票系統走私有網路即可。若暫時需要公開 `ledger` 的 `/docs` 來除錯，看完就關掉。
+
+**`AUTH_MODE=dev` 時任何拿到網址的人都是管理者**。在換成 Google 登入之前，`ledger-web` 的公開網址不要外流；Railway 可以先不產生公開網域，用 `railway run`／本機開發測試。
 
 **服務名稱 `ledger` 不要改**：它就是私有網路的主機名稱 `ledger.railway.internal`，ChefCashFlow 照合約呼叫這個位址。
 
@@ -157,7 +190,7 @@ FILE_STORE_MODE=s3 與 BUCKET 等五個變數（${{ledger-files.*}}）
 
 ## 下一步
 
-1. 前端：Next.js 帳務台（依 Design 畫布的 9 張畫面，先接 MSW）
+1. 前端 Google 登入（目前 dev 模式以 `X-Dev-User` 切換使用者）；匯入解析器依實際應付表、薪資表格式調整
 2. POS（EAT365）日報、外送平台、博竑銷貨（b2b_sales）、期初開帳（opening_balance）parser
 3. 總部分攤（allocation_rules／runs）、Excel 匯出
 4. 會計師科目表對應（category_account_map）
