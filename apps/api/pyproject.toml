@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "帳務損益系統 API（博竑・鄧師傅集團）"
 requires-python = ">=3.12"
 dependencies = [
-  "fastapi>=0.115",
+  "fastapi>=0.121",  # Depends(scope="function")：回應送出前就 commit
   "uvicorn[standard]>=0.30",
   "sqlalchemy>=2.0.30",
   "psycopg[binary]>=3.2",

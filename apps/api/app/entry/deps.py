@@ -14,7 +14,7 @@ from app.guard.principals import ServicePrincipal, UserPrincipal
 def current_user(
     authorization: str | None = Header(default=None),
     x_dev_user: str | None = Header(default=None),
-    gs: Session = Depends(get_guard_session),
+    gs: Session = Depends(get_guard_session, scope="function"),
 ) -> UserPrincipal:
     return guard.current_user(gs, authorization, x_dev_user)
 
@@ -26,7 +26,7 @@ def need(action: str) -> Callable[..., UserPrincipal]:
     return dep
 
 
-async def current_service(request: Request, gs: Session = Depends(get_guard_session)) -> ServicePrincipal:
+async def current_service(request: Request, gs: Session = Depends(get_guard_session, scope="function")) -> ServicePrincipal:
     body = await request.body()
     path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
     principal = guard.current_service(gs, request.method, request.url.path, request.headers.get("host", ""),

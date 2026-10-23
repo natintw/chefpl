@@ -56,3 +56,10 @@ def test_export_roundtrip(client):
     res = client.post("/api/v1/settings/vendor-map/import",
                       files={"file": ("back.xlsx", r.content, "application/octet-stream")}).json()
     assert res["unchanged"] == 1 and res["errors"] == []
+
+
+def test_freight_category_available(client):
+    cats = {c["code"]: c for c in client.get("/api/v1/settings/categories").json()["items"]}
+    assert cats["E13"]["name"] == "運費物流" and cats["E13"]["pl_section"] == "opex"
+    res = _map(client, [["統一編號", "廠商名稱", "類別代碼"], ["06898848", "新竹物流股份有限公司", "E13"]])
+    assert res["created"] == 1 and res["errors"] == []

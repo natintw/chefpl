@@ -33,7 +33,7 @@ def health():
 def open_items(company_id: str | None = None, doc_type: str | None = None, due_before: date | None = None,
                updated_after: datetime | None = None, cursor: str | None = None,
                limit: int = Query(200, ge=1, le=500), svc: ServicePrincipal = Depends(current_service),
-               s: Session = Depends(get_ledger_session)):
+               s: Session = Depends(get_ledger_session, scope="function")):
     types = [t for t in (doc_type or "").split(",") if t] or None
     return SettlementService(s).open_items(company_id=company_id, doc_types=types, due_before=due_before,
                                            updated_after=updated_after, cursor=cursor, limit=limit)
@@ -57,7 +57,7 @@ def _idempotent(s: Session, svc: ServicePrincipal, key: str, endpoint: str, body
 
 @router.post("/settlements")
 async def settlements(request: Request, body: SettlementsIn, idempotency_key: str = Header(...),
-                      svc: ServicePrincipal = Depends(current_service), s: Session = Depends(get_ledger_session)):
+                      svc: ServicePrincipal = Depends(current_service), s: Session = Depends(get_ledger_session, scope="function")):
     raw = await request.body()
     items = [i.model_dump(mode="json") for i in body.items]
     return _idempotent(s, svc, idempotency_key, "settlements", raw,
@@ -66,7 +66,7 @@ async def settlements(request: Request, body: SettlementsIn, idempotency_key: st
 
 @router.post("/bank-only-items")
 async def bank_only(request: Request, body: BankOnlyIn, idempotency_key: str = Header(...),
-                    svc: ServicePrincipal = Depends(current_service), s: Session = Depends(get_ledger_session)):
+                    svc: ServicePrincipal = Depends(current_service), s: Session = Depends(get_ledger_session, scope="function")):
     raw = await request.body()
     items = [i.model_dump(mode="json") for i in body.items]
     return _idempotent(s, svc, idempotency_key, "bank-only-items", raw,
@@ -75,7 +75,7 @@ async def bank_only(request: Request, body: BankOnlyIn, idempotency_key: str = H
 
 @router.get("/balances")
 def balances(as_of: date, company_id: str | None = None, category_code: str | None = None,
-             svc: ServicePrincipal = Depends(current_service), s: Session = Depends(get_ledger_session)):
+             svc: ServicePrincipal = Depends(current_service), s: Session = Depends(get_ledger_session, scope="function")):
     from app.config import get_settings
     cats = [c for c in (category_code or "").split(",") if c] or None
     out = ReportService(s).balances(ALL_SCOPE, as_of=as_of, company_id=company_id, category_codes=cats)

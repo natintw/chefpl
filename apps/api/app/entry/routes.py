@@ -79,7 +79,7 @@ def directory(user: UserPrincipal = Depends(current_user)):
 # ---------------------------------------------------------------- 損益
 @router.get("/pl/overview")
 def pl_overview(period: str = Query(pattern=PERIOD_PATTERN), user: UserPrincipal = Depends(need("pl.view")),
-                s: Session = Depends(get_ledger_session)):
+                s: Session = Depends(get_ledger_session, scope="function")):
     return ReportService(s).overview(user.scope, period)
 
 
@@ -87,7 +87,7 @@ def pl_overview(period: str = Query(pattern=PERIOD_PATTERN), user: UserPrincipal
 def pl_statement(period_from: str = Query(pattern=PERIOD_PATTERN), period_to: str = Query(pattern=PERIOD_PATTERN), company_id: str | None = None,
                  store_id: str | None = None, columns: str = Query("store", pattern="^(store|month|company)$"),
                  eliminate_intercompany: bool | None = None, user: UserPrincipal = Depends(need("pl.view")),
-                 s: Session = Depends(get_ledger_session)):
+                 s: Session = Depends(get_ledger_session, scope="function")):
     if company_id:
         _check_company(user, company_id)
     if user.scope.store_only:
@@ -101,7 +101,7 @@ def pl_statement(period_from: str = Query(pattern=PERIOD_PATTERN), period_to: st
 @router.get("/pl/drilldown")
 def pl_drilldown(period: str = Query(pattern=PERIOD_PATTERN), company_id: str | None = None, store_id: str | None = None,
                  category_code: str | None = None, pl_section: str | None = None, page: int = 1,
-                 user: UserPrincipal = Depends(need("pl.view")), s: Session = Depends(get_ledger_session)):
+                 user: UserPrincipal = Depends(need("pl.view")), s: Session = Depends(get_ledger_session, scope="function")):
     if not category_code and not pl_section:
         raise ValidationFailed("請指定 category_code 或 pl_section")
     if company_id:
@@ -113,7 +113,7 @@ def pl_drilldown(period: str = Query(pattern=PERIOD_PATTERN), company_id: str | 
 
 @router.get("/balances")
 def balances(as_of: date, company_id: str | None = None, user: UserPrincipal = Depends(need("balance.view")),
-             s: Session = Depends(get_ledger_session)):
+             s: Session = Depends(get_ledger_session, scope="function")):
     return ReportService(s).balances(user.scope, as_of=as_of, company_id=company_id)
 
 
@@ -123,7 +123,7 @@ def list_documents(doc_type: str | None = None, company_id: str | None = None, s
                    period: str | None = None, settle_status: str | None = None, source_kind: str | None = None,
                    due_before: date | None = None, q: str | None = None, page: int = 1,
                    page_size: int = Query(50, le=200), user: UserPrincipal = Depends(need("doc.view")),
-                   s: Session = Depends(get_ledger_session)):
+                   s: Session = Depends(get_ledger_session, scope="function")):
     cids = _cids(user)
     if company_id:
         _check_company(user, company_id)
@@ -139,26 +139,26 @@ def list_documents(doc_type: str | None = None, company_id: str | None = None, s
 
 @router.post("/documents", status_code=201)
 def create_document(body: DocumentCreate, user: UserPrincipal = Depends(need("doc.create")),
-                    s: Session = Depends(get_ledger_session)):
+                    s: Session = Depends(get_ledger_session, scope="function")):
     _check_company(user, body.company_id)
     return ser.document(PostingService(s).create(body.to_input(), user.actor))
 
 
 @router.post("/documents/check")
 def check_document(body: DocumentCreate, user: UserPrincipal = Depends(need("doc.create")),
-                   s: Session = Depends(get_ledger_session)):
+                   s: Session = Depends(get_ledger_session, scope="function")):
     return {"findings": [f.to_dict() for f in PostingService(s).check(body.to_input())]}
 
 
 @router.get("/documents/{doc_id}")
 def get_document(doc_id: uuid.UUID, user: UserPrincipal = Depends(need("doc.view")),
-                 s: Session = Depends(get_ledger_session)):
+                 s: Session = Depends(get_ledger_session, scope="function")):
     return ser.document(_doc_or_404(s, user, doc_id))
 
 
 @router.patch("/documents/{doc_id}")
 def patch_document(doc_id: uuid.UUID, body: DocumentPatch, user: UserPrincipal = Depends(need("doc.edit")),
-                   s: Session = Depends(get_ledger_session)):
+                   s: Session = Depends(get_ledger_session, scope="function")):
     _doc_or_404(s, user, doc_id)
     lines = [LineInput(**l.model_dump()) for l in body.lines] if body.lines is not None else None
     d = PostingService(s).update(doc_id, body.version, user.actor, memo=body.memo, due_date=body.due_date,
@@ -168,14 +168,14 @@ def patch_document(doc_id: uuid.UUID, body: DocumentPatch, user: UserPrincipal =
 
 @router.post("/documents/{doc_id}/void")
 def void_document(doc_id: uuid.UUID, body: VoidIn, user: UserPrincipal = Depends(need("doc.void")),
-                  s: Session = Depends(get_ledger_session)):
+                  s: Session = Depends(get_ledger_session, scope="function")):
     _doc_or_404(s, user, doc_id)
     return ser.document(PostingService(s).void(doc_id, body.reason, user.actor))
 
 
 @router.post("/documents/{doc_id}/link-accrual")
 def link_accrual(doc_id: uuid.UUID, body: LinkAccrualIn, user: UserPrincipal = Depends(need("doc.edit")),
-                 s: Session = Depends(get_ledger_session)):
+                 s: Session = Depends(get_ledger_session, scope="function")):
     _doc_or_404(s, user, doc_id)
     j = AccrualService(s).link(doc_id, body.accrual_id, body.relation, user.actor)
     return {"journal": ser.document(j) if j else None}
@@ -184,14 +184,14 @@ def link_accrual(doc_id: uuid.UUID, body: LinkAccrualIn, user: UserPrincipal = D
 # ---------------------------------------------------------------- 預估、預收
 @router.get("/accruals/suggestions")
 def accrual_suggestions(company_id: str, period: str = Query(pattern=PERIOD_PATTERN), user: UserPrincipal = Depends(need("doc.create")),
-                        s: Session = Depends(get_ledger_session)):
+                        s: Session = Depends(get_ledger_session, scope="function")):
     _check_company(user, company_id)
     return {"items": [x.to_dict() for x in AccrualService(s).suggestions(company_id, period)]}
 
 
 @router.post("/accruals/batch", status_code=201)
 def accrual_batch(body: AccrualBatchIn, user: UserPrincipal = Depends(need("doc.create")),
-                  s: Session = Depends(get_ledger_session)):
+                  s: Session = Depends(get_ledger_session, scope="function")):
     _check_company(user, body.company_id)
     svc = AccrualService(s)
     return {"items": [ser.document(svc.create_estimate(i.template_id, body.period, i.amount, user.actor))
@@ -200,7 +200,7 @@ def accrual_batch(body: AccrualBatchIn, user: UserPrincipal = Depends(need("doc.
 
 @router.get("/advances")
 def advances(company_id: str | None = None, status: str | None = None, delivery_before: date | None = None,
-             user: UserPrincipal = Depends(need("doc.view")), s: Session = Depends(get_ledger_session)):
+             user: UserPrincipal = Depends(need("doc.view")), s: Session = Depends(get_ledger_session, scope="function")):
     cids = {company_id} if company_id else _cids(user)
     if company_id:
         _check_company(user, company_id)
@@ -212,7 +212,7 @@ def advances(company_id: str | None = None, status: str | None = None, delivery_
 
 @router.post("/advances/recognize")
 def recognize(body: RecognizeIn, user: UserPrincipal = Depends(need("doc.create")),
-              s: Session = Depends(get_ledger_session)):
+              s: Session = Depends(get_ledger_session, scope="function")):
     svc = AdvanceService(s)
     out = []
     for it in body.items:
@@ -228,7 +228,7 @@ def recognize(body: RecognizeIn, user: UserPrincipal = Depends(need("doc.create"
 @router.post("/imports", status_code=201)
 async def upload_import(kind: str = Form(...), company_id: str = Form("*"), period: str = Form(...),
                         store_id: str | None = Form(None), file: UploadFile = File(...),
-                        user: UserPrincipal = Depends(need("import.run")), s: Session = Depends(get_ledger_session)):
+                        user: UserPrincipal = Depends(need("import.run")), s: Session = Depends(get_ledger_session, scope="function")):
     data = await file.read()
     if kind == "ap_sheet" and looks_like_invoice_summary(data):
         kind = "invoice_summary"  # 選了應付表但其實是發票系統的彙總表
@@ -242,7 +242,7 @@ async def upload_import(kind: str = Form(...), company_id: str = Form("*"), peri
 
 @router.get("/imports/{batch_id}")
 def get_import(batch_id: uuid.UUID, user: UserPrincipal = Depends(need("import.run")),
-               s: Session = Depends(get_ledger_session)):
+               s: Session = Depends(get_ledger_session, scope="function")):
     svc = ImportService(s)
     b = OpsRepository(s).batch(batch_id)
     if b is None:
@@ -253,7 +253,7 @@ def get_import(batch_id: uuid.UUID, user: UserPrincipal = Depends(need("import.r
 
 @router.post("/imports/{batch_id}/commit")
 def commit_import(batch_id: uuid.UUID, user: UserPrincipal = Depends(need("import.run")),
-                  s: Session = Depends(get_ledger_session)):
+                  s: Session = Depends(get_ledger_session, scope="function")):
     b = OpsRepository(s).batch(batch_id)
     if b is None:
         raise NotFound("找不到匯入批次")
@@ -264,7 +264,7 @@ def commit_import(batch_id: uuid.UUID, user: UserPrincipal = Depends(need("impor
 # ---------------------------------------------------------------- 待確認
 @router.get("/review-items")
 def review_items(kind: str | None = None, company_id: str | None = None, period: str | None = None,
-                 user: UserPrincipal = Depends(need("review.resolve")), s: Session = Depends(get_ledger_session)):
+                 user: UserPrincipal = Depends(need("review.resolve")), s: Session = Depends(get_ledger_session, scope="function")):
     cids = {company_id} if company_id else _cids(user)
     items = OpsRepository(s).list_reviews(company_ids=cids, kind=kind, period=period)
     return {"items": [{"id": str(i.id), "kind": i.kind, "company_id": i.company_id, "period": i.period_key,
@@ -273,7 +273,7 @@ def review_items(kind: str | None = None, company_id: str | None = None, period:
 
 @router.post("/review-items/{item_id}/resolve")
 def resolve_review(item_id: uuid.UUID, body: ResolveIn, user: UserPrincipal = Depends(need("review.resolve")),
-                   s: Session = Depends(get_ledger_session)):
+                   s: Session = Depends(get_ledger_session, scope="function")):
     item = OpsRepository(s).review(item_id)
     if item is None:
         raise NotFound("待確認項目不存在")
@@ -284,7 +284,7 @@ def resolve_review(item_id: uuid.UUID, body: ResolveIn, user: UserPrincipal = De
 # ---------------------------------------------------------------- 月結
 @router.get("/periods/{company_id}/{period}")
 def period_checklist(company_id: str, period: str, acknowledge_unallocated: bool = False,
-                     user: UserPrincipal = Depends(need("pl.view")), s: Session = Depends(get_ledger_session)):
+                     user: UserPrincipal = Depends(need("pl.view")), s: Session = Depends(get_ledger_session, scope="function")):
     _check_company(user, company_id)
     st = OpsRepository(s).period(company_id, period)
     return {"company_id": company_id, "period": period, "status": st.status,
@@ -293,27 +293,27 @@ def period_checklist(company_id: str, period: str, acknowledge_unallocated: bool
 
 @router.post("/periods/{company_id}/{period}/close")
 def close_period(company_id: str, period: str, body: CloseIn, user: UserPrincipal = Depends(need("period.close")),
-                 s: Session = Depends(get_ledger_session)):
+                 s: Session = Depends(get_ledger_session, scope="function")):
     _check_company(user, company_id)
     return PeriodService(s).close(company_id, period, user.actor, body.acknowledge_unallocated)
 
 
 @router.post("/periods/{company_id}/{period}/reopen")
 def reopen_period(company_id: str, period: str, body: ReopenIn, user: UserPrincipal = Depends(need("period.reopen")),
-                  s: Session = Depends(get_ledger_session)):
+                  s: Session = Depends(get_ledger_session, scope="function")):
     return PeriodService(s).reopen(company_id, period, user.actor, body.reason)
 
 
 # ---------------------------------------------------------------- 設定
 @router.get("/settings/categories")
-def categories(user: UserPrincipal = Depends(current_user), s: Session = Depends(get_ledger_session)):
+def categories(user: UserPrincipal = Depends(current_user), s: Session = Depends(get_ledger_session, scope="function")):
     return {"items": [{"code": c.code, "name": c.name, "pl_section": c.pl_section, "nature": c.nature,
                        "is_active": c.is_active} for c in CatalogRepository(s).categories.values()]}
 
 
 @router.get("/settings/counterparties")
 def list_counterparties(q: str | None = None, user: UserPrincipal = Depends(need("doc.view")),
-                        s: Session = Depends(get_ledger_session)):
+                        s: Session = Depends(get_ledger_session, scope="function")):
     return {"items": [{"id": str(c.id), "name": c.name, "tax_id": c.tax_id, "default_category_code":
                        c.default_category_code, "payment_rule": c.payment_rule, "keywords": c.keywords,
                        "is_intercompany": c.is_intercompany, "is_active": c.is_active}
@@ -322,7 +322,7 @@ def list_counterparties(q: str | None = None, user: UserPrincipal = Depends(need
 
 @router.post("/settings/counterparties", status_code=201)
 def create_counterparty(body: CounterpartyIn, user: UserPrincipal = Depends(need("settings.manage")),
-                        s: Session = Depends(get_ledger_session)):
+                        s: Session = Depends(get_ledger_session, scope="function")):
     cat = CatalogRepository(s)
     if body.default_category_code and cat.category(body.default_category_code) is None:
         raise ValidationFailed("預設類別不存在")
@@ -332,7 +332,7 @@ def create_counterparty(body: CounterpartyIn, user: UserPrincipal = Depends(need
 
 @router.patch("/settings/counterparties/{cp_id}")
 def patch_counterparty(cp_id: uuid.UUID, body: CounterpartyPatch, user: UserPrincipal = Depends(need("settings.manage")),
-                       s: Session = Depends(get_ledger_session)):
+                       s: Session = Depends(get_ledger_session, scope="function")):
     cp = CatalogRepository(s).counterparty(cp_id)
     if cp is None:
         raise NotFound("對象不存在")
@@ -344,26 +344,26 @@ def patch_counterparty(cp_id: uuid.UUID, body: CounterpartyPatch, user: UserPrin
 # ---------------------------------------------------------------- 廠商類別對應表
 @router.get("/settings/vendor-map")
 def vendor_map(q: str | None = None, only_unmapped: bool = False, user: UserPrincipal = Depends(need("doc.view")),
-               s: Session = Depends(get_ledger_session)):
+               s: Session = Depends(get_ledger_session, scope="function")):
     return {"items": VendorMapService(s).list(q, only_unmapped)}
 
 
 @router.patch("/settings/vendor-map/{cp_id}")
 def set_vendor_category(cp_id: uuid.UUID, category_code: str | None = Body(None, embed=True),
                         name: str | None = Body(None, embed=True),
-                        user: UserPrincipal = Depends(need("settings.manage")), s: Session = Depends(get_ledger_session)):
+                        user: UserPrincipal = Depends(need("settings.manage")), s: Session = Depends(get_ledger_session, scope="function")):
     return VendorMapService(s).set(cp_id, category_code, user.actor, name=name)
 
 
 @router.post("/settings/vendor-map/import")
 async def import_vendor_map(file: UploadFile = File(...), user: UserPrincipal = Depends(need("settings.manage")),
-                            s: Session = Depends(get_ledger_session)):
+                            s: Session = Depends(get_ledger_session, scope="function")):
     from dataclasses import asdict
     return asdict(VendorMapService(s).import_xlsx(await file.read(), user.actor))
 
 
 @router.get("/settings/vendor-map/export")
-def export_vendor_map(user: UserPrincipal = Depends(need("doc.view")), s: Session = Depends(get_ledger_session)):
+def export_vendor_map(user: UserPrincipal = Depends(need("doc.view")), s: Session = Depends(get_ledger_session, scope="function")):
     return Response(VendorMapService(s).export_xlsx(),
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": "attachment; filename*=UTF-8''vendor-categories.xlsx"})
@@ -371,20 +371,20 @@ def export_vendor_map(user: UserPrincipal = Depends(need("doc.view")), s: Sessio
 
 @router.post("/settings/rules", status_code=201)
 def create_rule(body: RuleIn, user: UserPrincipal = Depends(need("settings.manage")),
-                s: Session = Depends(get_ledger_session)):
+                s: Session = Depends(get_ledger_session, scope="function")):
     r = CatalogRepository(s).add_rule(body.layer, body.category_code, user.actor, body.counterparty_id, body.keyword)
     return {"id": str(r.id)}
 
 
 @router.get("/settings/recurring")
-def list_recurring(user: UserPrincipal = Depends(need("settings.manage")), s: Session = Depends(get_ledger_session)):
+def list_recurring(user: UserPrincipal = Depends(need("settings.manage")), s: Session = Depends(get_ledger_session, scope="function")):
     return {"items": [{k: (str(v) if isinstance(v, uuid.UUID) else v) for k, v in t.__dict__.items()
                        if not k.startswith("_")} for t in OpsRepository(s).list_recurring(_cids(user))]}
 
 
 @router.post("/settings/recurring", status_code=201)
 def create_recurring(body: RecurringIn, user: UserPrincipal = Depends(need("settings.manage")),
-                     s: Session = Depends(get_ledger_session)):
+                     s: Session = Depends(get_ledger_session, scope="function")):
     _check_company(user, body.company_id)
     t = OpsRepository(s).add(RecurringTemplate(**body.model_dump()))
     return {"id": str(t.id)}
@@ -392,14 +392,14 @@ def create_recurring(body: RecurringIn, user: UserPrincipal = Depends(need("sett
 
 @router.get("/settings/accrual-templates")
 def list_accrual_templates(user: UserPrincipal = Depends(need("settings.manage")),
-                           s: Session = Depends(get_ledger_session)):
+                           s: Session = Depends(get_ledger_session, scope="function")):
     return {"items": [{k: (str(v) if isinstance(v, uuid.UUID) else v) for k, v in t.__dict__.items()
                        if not k.startswith("_")} for t in OpsRepository(s).list_accrual_templates(_cids(user))]}
 
 
 @router.post("/settings/accrual-templates", status_code=201)
 def create_accrual_template(body: AccrualTemplateIn, user: UserPrincipal = Depends(need("settings.manage")),
-                            s: Session = Depends(get_ledger_session)):
+                            s: Session = Depends(get_ledger_session, scope="function")):
     _check_company(user, body.company_id)
     if body.accrual_mode == "provision" and not body.fixed_amount:
         raise ValidationFailed("分月預提要填每月金額")
