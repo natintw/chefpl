@@ -51,6 +51,6 @@ export type Category = { code: string; name: string; pl_section: string; nature:
 export type Counterparty = { id: string; name: string; tax_id: string | null; default_category_code: string | null;
   payment_rule: string; keywords: string[]; is_intercompany: boolean };
 export type ReviewItem = { id: string; kind: string; company_id: string; period: string | null; ref: string | null;
-  payload: Record<string, any>; created_at: string };
+  payload: Record<string, any>; created_at: string; suggested_store_id?: string | null };
 export type ChecklistItem = { code: string; label: string; status: "passed" | "failed" | "na"; note: string };
 export type Finding = { code: string; level: "ok" | "warn" | "info" | "error"; message: string; data: Record<string, any> };

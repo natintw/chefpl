@@ -68,7 +68,9 @@ class BankMatchService:
 
     # ------------------------------------------------------------------ 入口
     def receive(self, items: list[dict[str, Any]], actor: str) -> dict[str, Any]:
-        self._vendors = [cp for cp in self.s.scalars(select(Counterparty).where(Counterparty.is_active.is_(True)))]
+        # 只用廠商／客戶比對；從銀行交易建立的對象（員工薪資、銀行）不算廠商
+        self._vendors = [cp for cp in self.s.scalars(select(Counterparty).where(Counterparty.is_active.is_(True)))
+                         if set(cp.roles or []) - {"payee"}]
         results, counts = [], {"matched": 0, "review": 0, "duplicate": 0, "rejected": 0, "skipped": 0}
         bad_accounts = upsert_from_items(self.s, items)  # 帳戶資料以現金流系統為準
         for it in items:

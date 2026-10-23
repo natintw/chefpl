@@ -105,7 +105,10 @@ class PostingService:
         if inp.counterparty_name:
             cp = self.catalog.find_counterparty(inp.counterparty_name, None)
             if cp is None:
-                cp = self.ensure_counterparty(inp.counterparty_name, None, inp.company_id, actor)
+                # 從銀行交易建立的（薪資、手續費…）：對象多半是員工或銀行，不開「新對象」待確認
+                cp = self.ensure_counterparty(inp.counterparty_name, None, inp.company_id, actor,
+                                              roles=["payee"] if inp.source_kind == "bank_only" else None,
+                                              review=inp.source_kind != "bank_only")
             return cp
         return None
 

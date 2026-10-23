@@ -306,8 +306,15 @@ def review_items(kind: str | None = None, company_id: str | None = None, period:
                  user: UserPrincipal = Depends(need("review.resolve")), s: Session = Depends(get_ledger_session, scope="function")):
     cids = {company_id} if company_id else _cids(user)
     items = OpsRepository(s).list_reviews(company_ids=cids, kind=kind, period=period)
+    # 銀行交易：對方戶名先前選過門市的，帶出建議門市（例：員工屬於哪家店）
+    names = {(i.payload or {}).get("item", {}).get("counterparty_name") for i in items if i.kind == "bank_only"} - {None, ""}
+    stores = {cp.name: cp.default_store_id for cp in CatalogRepository(s).counterparties_by_names(names)} if names else {}
+    def extra(i):
+        if i.kind != "bank_only":
+            return {}
+        return {"suggested_store_id": stores.get((i.payload or {}).get("item", {}).get("counterparty_name"))}
     return {"items": [{"id": str(i.id), "kind": i.kind, "company_id": i.company_id, "period": i.period_key,
-                       "ref": i.ref, "payload": i.payload, "created_at": i.created_at.isoformat()} for i in items]}
+                       "ref": i.ref, "payload": i.payload, "created_at": i.created_at.isoformat(), **extra(i)} for i in items]}
 
 
 @router.post("/review-items/batch")

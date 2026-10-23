@@ -110,6 +110,10 @@ class ReviewService:
                     failed.append({"id": str(item_id), "message": "請指定損益月份"})
                     continue
                 p.setdefault("counterparty_name", it.get("counterparty_name"))
+                per_store = (payload.get("store_by_item") or {}).get(str(item_id))
+                if per_store is not None:
+                    p["store_id"] = per_store or None   # 空字串＝公司層級
+                p.pop("store_by_item", None)
             try:
                 with self.s.begin_nested():
                     self.resolve(item_id, action, p, actor)
@@ -146,6 +150,9 @@ class ReviewService:
                                             match_level="manual"))
         self.s.refresh(doc)
         self.posting.recompute_settlement(doc)
+        stores = {ln.store_id for ln in doc.lines if ln.store_id}
+        if doc.counterparty is not None and len(stores) == 1:
+            doc.counterparty.default_store_id = stores.pop()   # 記住：下次同一個對象自動帶這家門市
         return doc
 
 

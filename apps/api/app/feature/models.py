@@ -66,7 +66,8 @@ class Counterparty(Base):
     payment_rule: Mapped[str] = mapped_column(Text, default="next_month_30")
     keywords: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     aliases: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)  # 同統編的其他寫法（發票辨識誤差）
-    bank_accounts: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)  # 對方帳號（遮蔽或末幾碼），比對付款用
+    bank_accounts: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    default_store_id: Mapped[str | None] = mapped_column(Text)  # 這個對象的單據預設門市（例：員工屬於哪家店）  # 對方帳號（遮蔽或末幾碼），比對付款用
     issues_invoice: Mapped[bool] = mapped_column(Boolean, default=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -141,3 +141,24 @@ def test_quiet_category_not_reviewed_and_cleanup(client, svc_headers):
     it = next(i for i in client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]
               if i["payload"]["item"]["cash_txn_id"] == "Q3")
     assert it["payload"]["item"]["cash_category_name"] == "薪資"
+
+
+def test_salary_by_store_is_remembered(client, svc_headers):
+    """薪資放到門市：批次時逐筆指定門市；下次同一個人自動建議那家門市；不會開「新對象」待確認。"""
+    sal = {"cash_category_code": "EXP_SAL", "cash_category_name": "薪資", "cash_account_id": "acc-3312"}
+    _send(client, svc_headers, _txn("ST1", 30000, counterparty_name="王小明", txn_date="2026-09-05", **sal),
+          _txn("ST2", 28000, counterparty_name="李小華", txn_date="2026-09-05", **sal))
+    items = {i["payload"]["item"]["cash_txn_id"]: i for i in client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]}
+    r = client.post("/api/v1/review-items/batch", json={
+        "ids": [items["ST1"]["id"], items["ST2"]["id"]], "action": "create_document",
+        "payload": {"category_code": "P01", "period_mode": "prev", "store_by_item": {items["ST1"]["id"]: "store-ys-01", items["ST2"]["id"]: ""}}})
+    assert r.status_code == 200 and len(r.json()["ok"]) == 2, r.text
+    kinds = [i["kind"] for i in client.get("/api/v1/review-items").json()["items"]]
+    assert "new_counterparty" not in kinds
+    pl = client.get("/api/v1/pl/statement", params={"period_from": "2026-08", "period_to": "2026-08", "company_id": "comp-2",
+                                                    "store_id": "store-ys-01"}).json()
+    assert "30000" in str(pl)
+    _send(client, svc_headers, _txn("ST3", 30500, counterparty_name="王小明", txn_date="2026-10-05", **sal))
+    nxt = next(i for i in client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]
+               if i["payload"]["item"]["cash_txn_id"] == "ST3")
+    assert nxt["suggested_store_id"] == "store-ys-01"

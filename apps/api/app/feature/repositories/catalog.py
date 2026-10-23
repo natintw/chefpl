@@ -43,6 +43,10 @@ class CatalogRepository:
     def counterparty_by_name(self, name: str) -> Counterparty | None:
         return self.s.scalar(select(Counterparty).where(Counterparty.name == name))
 
+    def counterparties_by_names(self, names: set[str]) -> list[Counterparty]:
+        return list(self.s.scalars(select(Counterparty).where(Counterparty.name.in_(list(names)),
+                                                              Counterparty.default_store_id.is_not(None))))
+
     def find_counterparty(self, name: str | None, tax_id: str | None) -> Counterparty | None:
         if tax_id:
             hit = self.counterparty_by_tax_id(tax_id)
