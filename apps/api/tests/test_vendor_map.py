@@ -61,5 +61,6 @@ def test_export_roundtrip(client):
 def test_freight_category_available(client):
     cats = {c["code"]: c for c in client.get("/api/v1/settings/categories").json()["items"]}
     assert cats["E13"]["name"] == "運費物流" and cats["E13"]["pl_section"] == "opex"
+    assert [cats[c]["name"] for c in ("E14", "E15", "E16")] == ["交通費", "設備費", "系統租用費"]
     res = _map(client, [["統一編號", "廠商名稱", "類別代碼"], ["06898848", "新竹物流股份有限公司", "E13"]])
     assert res["created"] == 1 and res["errors"] == []
