@@ -190,6 +190,15 @@ FILE_STORE_MODE=s3 與 BUCKET 等五個變數（${{ledger-files.*}}）
 
 ---
 
+## 銀行交易 Webhook（與 ChefCashFlow 對接）
+
+ChefCashFlow 匯入銀行簿子後，把銀行交易送到 `POST /integration/v1/webhooks/bank-transactions`（公開網址＋金鑰＋HMAC 簽章，
+兩個系統不必在同一個 Railway project）。比對在帳務系統：先對方帳號、再戶名／摘要／備註認出廠商，在同一法人的未付應付裡找金額
+剛好相符的組合，一筆匯款可結清多家門市的單據；對不到的進待確認並附建議。完整規格、簽章範例程式與兩邊的環境變數見
+`docs/銀行交易Webhook規格.md`。
+
+---
+
 ## 匯入範本（目前版本）
 
 【待確認】真實的應付表、薪資表格式。拿到樣本後只需調整 `app/feature/imports/parsers.py` 的欄位別名。

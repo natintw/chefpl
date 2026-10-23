@@ -19,7 +19,8 @@ os.environ.update({
     "INTEGRATION_CLIENTS": json.dumps([{
         "client": "cashflow", "key_sha256": [hashlib.sha256(TEST_KEY.encode()).hexdigest()],
         "allow": ["GET /integration/v1/open-items", "GET /integration/v1/balances",
-                  "POST /integration/v1/settlements", "POST /integration/v1/bank-only-items"]}]),
+                  "POST /integration/v1/settlements", "POST /integration/v1/bank-only-items",
+                  "POST /integration/v1/webhooks/bank-transactions"]}]),
 })
 
 from alembic import command  # noqa: E402

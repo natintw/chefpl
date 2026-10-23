@@ -30,6 +30,23 @@ class ReviewService:
             item.status = "dismissed"
         elif item.kind == "bank_only" and action == "create_document":
             result["document_id"] = str(self._bank_only_document(item.payload["item"], payload, actor).id)
+        elif item.kind == "bank_only" and action == "settle_suggestion":
+            # webhook 對不到時附上的建議單據：會計確認後，整組標成已付／已收
+            it = item.payload["item"]
+            sug = item.payload.get("suggestion") or {}
+            picked = set(payload.get("document_ids") or [d["document_id"] for d in sug.get("documents", [])])
+            docs = [d for d in sug.get("documents", []) if d["document_id"] in picked]
+            if not docs:
+                raise ValidationFailed("沒有選任何單據")
+            if sum(d["amount"] for d in docs) != int(it["amount"]):
+                raise ValidationFailed(f"選的單據合計 {sum(d['amount'] for d in docs):,}，與銀行金額 {int(it['amount']):,} 不同")
+            res = SettlementService(self.s).apply([
+                {"document_id": d["document_id"], "cash_txn_id": it["cash_txn_id"], "cash_account_id": it["cash_account_id"],
+                 "txn_date": it["txn_date"], "amount": d["amount"], "bank_amount": int(it["amount"]),
+                 "match_level": "manual", "matched_by": "manual"} for d in docs], actor)
+            if res["rejected"]:
+                raise ValidationFailed("；".join(r["message"] for r in res["rejected"]))
+            result["settled_documents"] = [d["document_id"] for d in docs]
         elif item.kind == "unclassified" and action in ("set_category", "accept_suggestion"):
             code = payload.get("category_code") if action == "set_category" else \
                 (item.payload.get("suggestion") or {}).get("category_code")

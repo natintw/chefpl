@@ -188,5 +188,23 @@ class BankOnlyItemIn(BaseModel):
     balance_after: int | None = None
 
 
+class BankTxnIn(BaseModel):
+    """webhook：現金流系統送來的一筆銀行交易（只送事實，比對由帳務系統做）。"""
+    cash_txn_id: str = Field(min_length=1, max_length=200)
+    cash_account_id: str
+    txn_date: date
+    direction: Literal["out", "in"]
+    amount: int = Field(ge=1)
+    bank_memo: str | None = None
+    bank_note: str | None = None
+    counterparty_name: str | None = None
+    counterparty_account_no: str | None = Field(None, description="對方帳號，可遮蔽，至少保留末 5 碼")
+
+
+class BankTxnWebhookIn(BaseModel):
+    event: Literal["bank_transactions.imported"] = "bank_transactions.imported"
+    items: list[BankTxnIn] = Field(min_length=1, max_length=1000)
+
+
 class BankOnlyIn(BaseModel):
     items: list[BankOnlyItemIn] = Field(min_length=1, max_length=500)

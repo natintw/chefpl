@@ -65,7 +65,7 @@ export default function ReviewPage() {
 
 function Card({ it, onDone }: { it: ReviewItem; onDone: () => void }) {
   const toast = useToast();
-  const { companyName, categories, categoryName } = useDirectory();
+  const { companyName, storeName, categories, categoryName } = useDirectory();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<ApiError | null>(null);
   const p = it.payload;
@@ -102,6 +102,18 @@ function Card({ it, onDone }: { it: ReviewItem; onDone: () => void }) {
           <div><div className="k">帳戶</div><div>{bank.cash_account_id}</div></div>
           <div><div className="k">方向</div><div>{bank.direction === "out" ? "支出" : "收入"}</div></div>
           {bank.bank_note && <div><div className="k">備註</div><div>{bank.bank_note}</div></div>}
+          {bank.counterparty_name && <div><div className="k">對方戶名</div><div>{bank.counterparty_name}</div></div>}
+        </div>
+      )}
+      {it.kind === "bank_only" && p.reason && <p className="small" style={{ margin: 0 }}>系統比對結果：{p.reason}</p>}
+      {it.kind === "bank_only" && p.suggestion?.documents?.length > 0 && (
+        <div className="ai">
+          <div style={{ fontWeight: 600 }}>可能是：{p.suggestion.counterparty_name || "以下單據"}，{p.suggestion.documents.length} 張未付合計
+            <span className="num"> {money(p.suggestion.documents.reduce((a: number, d: { amount: number }) => a + d.amount, 0))}</span></div>
+          <div className="small">
+            {p.suggestion.documents.map((d: { document_id: string; amount: number; store_ids: string[]; period: string }) =>
+              `${d.period} ${d.store_ids.map((x) => storeName(x)).join("、") || "公司層級"} ${money(d.amount)}`).join("；")}
+          </div>
         </div>
       )}
       {it.kind === "unclassified" && p.suggestion && (
@@ -116,6 +128,11 @@ function Card({ it, onDone }: { it: ReviewItem; onDone: () => void }) {
 
       <FieldErrors error={err} />
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {it.kind === "bank_only" && p.suggestion?.documents?.length > 0 && (
+          <button className="btn pri" disabled={busy} onClick={() => resolve("settle_suggestion", {},
+            `已標為${bank?.direction === "out" ? "已付" : "已收"}：${p.suggestion.documents.length} 張`)}>
+            是這幾張，標為{bank?.direction === "out" ? "已付" : "已收"}</button>
+        )}
         {it.kind === "bank_only" && <>
           {catSelect(bank?.direction === "out" ? ["expense", "balance"] : ["income", "balance"])}
           <label className="ctl"><span className="k">對象</span><input value={cpName} onChange={(e) => setCpName(e.target.value)} placeholder="例：臺灣銀行" /></label>

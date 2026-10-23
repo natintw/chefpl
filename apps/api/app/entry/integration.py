@@ -14,10 +14,11 @@ from sqlalchemy.orm import Session
 
 from app.db import get_ledger_session
 from app.entry.deps import current_service
-from app.entry.schemas import BankOnlyIn, SettlementsIn
+from app.entry.schemas import BankOnlyIn, BankTxnWebhookIn, SettlementsIn
 from app.errors import IdempotencyConflict, ValidationFailed
 from app.feature.reports import ReportService
 from app.feature.repositories import OpsRepository
+from app.feature.bank_matching import BankMatchService
 from app.feature.settlement import SettlementService
 from app.guard.principals import ALL_SCOPE, ServicePrincipal
 
@@ -62,6 +63,18 @@ async def settlements(request: Request, body: SettlementsIn, idempotency_key: st
     items = [i.model_dump(mode="json") for i in body.items]
     return _idempotent(s, svc, idempotency_key, "settlements", raw,
                        lambda: SettlementService(s).apply(items, svc.actor))
+
+
+@router.post("/webhooks/bank-transactions")
+async def bank_transactions_webhook(request: Request, body: BankTxnWebhookIn, idempotency_key: str = Header(...),
+                                    svc: ServicePrincipal = Depends(current_service),
+                                    s: Session = Depends(get_ledger_session, scope="function")):
+    """現金流系統匯入銀行簿子後呼叫。帳務系統自己比對未付應付（可一筆匯款對多家門市的單據），
+    對不到的進「待確認」。同一個 cash_txn_id 重送會略過。"""
+    raw = await request.body()
+    items = [i.model_dump(mode="json") for i in body.items]
+    return _idempotent(s, svc, idempotency_key, "webhooks/bank-transactions", raw,
+                       lambda: BankMatchService(s).receive(items, svc.actor))
 
 
 @router.post("/bank-only-items")
