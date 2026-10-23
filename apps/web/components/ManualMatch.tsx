@@ -30,10 +30,12 @@ export function ManualMatch({ reviewId, bank, preselect, onDone }: {
   }, [dir, bank.company_id]);
   const [q, setQ] = useState("");
   const [term, setTerm] = useState("");
+  const [period, setPeriod] = useState("");
   useEffect(() => { const t = setTimeout(() => setTerm(q), 300); return () => clearTimeout(t); }, [q]);
   const docType = bank.direction === "out" ? "payable" : "receivable,advance_receipt";
   const list = useApi<{ items: Doc[]; total: number }>("/documents", {
-    doc_type: docType, company_id: root, settle_status: "open,partial", q: term || undefined, page_size: 100 });
+    doc_type: docType, company_id: root, settle_status: "open,partial", q: term || undefined, period: period || undefined,
+    page_size: 100 });
   const [picked, setPicked] = useState<Map<string, Doc>>(new Map());
   // 系統建議的單據先勾好
   useEffect(() => {
@@ -73,6 +75,8 @@ export function ManualMatch({ reviewId, bank, preselect, onDone }: {
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <strong>手動核對</strong>
         <span className="small">從 {companyName(root)}（含分公司）未{out ? "付" : "收"}的單據裡勾選</span>
+        <label className="ctl"><span className="k">單據月份</span>
+          <input type="month" value={period} onChange={(e) => setPeriod(e.target.value)} /></label>
         <label style={{ flex: "1 1 220px" }}><span className="sr">搜尋廠商、發票號碼</span>
           <input placeholder="搜尋廠商、摘要或發票號碼" value={q} onChange={(e) => setQ(e.target.value)} /></label>
       </div>

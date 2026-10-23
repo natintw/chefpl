@@ -103,3 +103,41 @@ def test_overpaid_requires_category_mode(client, svc_headers):
     a = payable(client, company="comp-1", store="store-bh-factory", amount=1050, vendor="元華行", invoice_no="MM00000009")
     _send(client, svc_headers, _txn("M5", 2000, counterparty_name="某某", txn_date="2026-09-30"))
     assert _match(client, "M5", [a["id"]], difference_mode="leave_open").status_code == 422
+
+
+def test_batch_salary_to_previous_month(client, svc_headers):
+    """9 月匯出的薪資（8 月的薪資）：批次建立 P01，損益記在 8 月、公司層級。"""
+    sal = {"cash_category_code": "EXP_SAL", "cash_category_name": "薪資"}
+    _send(client, svc_headers, _txn("SAL1", 32000, counterparty_name="王小明", txn_date="2026-09-05", **sal),
+          _txn("SAL2", 28000, counterparty_name="李小華", txn_date="2026-09-05", **sal))
+    items = [i for i in client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]
+             if i["payload"]["item"]["cash_txn_id"] in ("SAL1", "SAL2")]
+    assert len(items) == 2 and items[0]["payload"]["item"]["cash_category_code"] == "EXP_SAL"
+    r = client.post("/api/v1/review-items/batch", json={"ids": [i["id"] for i in items], "action": "create_document",
+                                                       "payload": {"category_code": "P01", "period_mode": "prev"}})
+    assert r.status_code == 200 and len(r.json()["ok"]) == 2, r.text
+    pl = client.get("/api/v1/pl/statement", params={"period_from": "2026-08", "period_to": "2026-08", "company_id": "comp-1",
+                                                    "columns": "month"}).json()
+    assert "60,000" in str(pl).replace("60000", "60,000")
+    assert not [i for i in client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]
+                if i["payload"]["item"]["cash_txn_id"] in ("SAL1", "SAL2")]
+
+
+def test_quiet_category_not_reviewed_and_cleanup(client, svc_headers):
+    """現金存提、內部調度：對不到不進待確認；先前沒帶分類而進了待確認的，重送帶分類後自動撤下。"""
+    res = _send(client, svc_headers, _txn("Q1", 5000, txn_date="2026-09-05", cash_category_code="CSH_WDL",
+                                          cash_category_name="現金提領"))
+    assert res["skipped"] == 1
+    _send(client, svc_headers, _txn("Q2", 7000, txn_date="2026-09-05"))           # 沒帶分類 → 待確認
+    res = _send(client, svc_headers, _txn("Q2", 7000, txn_date="2026-09-05", cash_category_code="INT_TRN",
+                                          cash_category_name="內部調度"))
+    assert res["skipped"] == 1
+    st = client.post(HOOK, json={"event": "bank_transactions.status", "items": [{"cash_txn_id": "Q1"}, {"cash_txn_id": "Q2"}]},
+                     headers={**svc_headers, "Idempotency-Key": str(uuid.uuid4())}).json()
+    assert {r["status"] for r in st["results"]} == {"skipped"}
+    # 重送沒帶分類的交易：分類補上
+    _send(client, svc_headers, _txn("Q3", 1234, txn_date="2026-09-05"))
+    _send(client, svc_headers, _txn("Q3", 1234, txn_date="2026-09-05", cash_category_code="EXP_SAL", cash_category_name="薪資"))
+    it = next(i for i in client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]
+              if i["payload"]["item"]["cash_txn_id"] == "Q3")
+    assert it["payload"]["item"]["cash_category_name"] == "薪資"

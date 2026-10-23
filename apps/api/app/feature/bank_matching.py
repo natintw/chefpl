@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.feature.bank_accounts import upsert_from_items
 from app.feature.models import Counterparty, Document, ReviewItem, Settlement
 from app.feature.settlement import SettlementService
@@ -68,7 +69,7 @@ class BankMatchService:
     # ------------------------------------------------------------------ 入口
     def receive(self, items: list[dict[str, Any]], actor: str) -> dict[str, Any]:
         self._vendors = [cp for cp in self.s.scalars(select(Counterparty).where(Counterparty.is_active.is_(True)))]
-        results, counts = [], {"matched": 0, "review": 0, "duplicate": 0, "rejected": 0}
+        results, counts = [], {"matched": 0, "review": 0, "duplicate": 0, "rejected": 0, "skipped": 0}
         bad_accounts = upsert_from_items(self.s, items)  # 帳戶資料以現金流系統為準
         for it in items:
             if it["cash_account_id"] in bad_accounts:
@@ -83,7 +84,19 @@ class BankMatchService:
     def _one(self, it: dict[str, Any], actor: str) -> dict[str, Any]:
         txn = it["cash_txn_id"]
         base = {"cash_txn_id": txn}
-        if self.docs.txn_already_used(txn) or self._has_live_review(txn):
+        if self.docs.txn_already_used(txn):
+            return {**base, "status": "duplicate"}
+        if self._has_live_review(txn):
+            # 先前進了待確認、現在現金流分類是「不需核對」（例：歸成薪資）→ 自動撤下
+            if self._quiet(it):
+                open_item = self.s.scalar(select(ReviewItem).where(ReviewItem.kind == "bank_only",
+                                                                   ReviewItem.ref == f"cash_txn:{txn}", ReviewItem.status == "open"))
+                if open_item is not None:
+                    open_item.status, open_item.resolved_by = "dismissed", "system"
+                    open_item.resolved_at = datetime.now(timezone.utc)
+                    open_item.resolution = {"auto_skipped": True, "category": self._cat(it)}
+                    return {**base, "status": "skipped", "reason": f"現金流分類：{self._cat(it)}（不需核對）"}
+            self._refresh_category(txn, it)
             return {**base, "status": "duplicate"}
         acct = self.dir.get_bank_account(it["cash_account_id"])
         if acct is None:
@@ -123,12 +136,50 @@ class BankMatchService:
         return self._review(it, acct.company_id, cp, [], reason)
 
     def _has_live_review(self, txn: str) -> bool:
-        """這筆交易已經有待確認（處理中或已處理）。因交易被刪而撤下的不算，重新匯入時要再比一次。"""
+        """這筆交易已經有待確認（處理中或已處理）。因交易被刪而撤下的、或因分類自動略過的不算，重送時要再比一次。"""
         for it in self.s.scalars(select(ReviewItem).where(ReviewItem.kind == "bank_only",
                                                           ReviewItem.ref == f"cash_txn:{txn}")):
-            if not (it.resolution or {}).get("withdrawn"):
+            r = it.resolution or {}
+            if not (r.get("withdrawn") or r.get("auto_skipped")):
                 return True
         return False
+
+    def _refresh_category(self, txn: str, it: dict[str, Any]) -> None:
+        """重送時更新待確認上的現金流分類（先前送的沒帶分類，或會計在現金流改了分類）。"""
+        if not it.get("cash_category_code"):
+            return
+        row = self.s.scalar(select(ReviewItem).where(ReviewItem.kind == "bank_only", ReviewItem.ref == f"cash_txn:{txn}",
+                                                     ReviewItem.status == "open"))
+        if row is not None:
+            item = dict((row.payload or {}).get("item") or {})
+            item.update(cash_category_code=it.get("cash_category_code"), cash_category_name=it.get("cash_category_name"))
+            row.payload = {**(row.payload or {}), "item": item}
+
+    def _quiet(self, it: dict[str, Any]) -> bool:
+        code = (it.get("cash_category_code") or "").strip()
+        quiet = {c.strip() for c in get_settings().bank_quiet_categories.split(",") if c.strip()}
+        return bool(code) and code in quiet
+
+    @staticmethod
+    def _cat(it: dict[str, Any]) -> str:
+        return it.get("cash_category_name") or it.get("cash_category_code") or ""
+
+    def _skip(self, it: dict[str, Any], company_id: str, reason: str) -> dict[str, Any]:
+        """不需核對的分類：不進待確認，留一筆已略過的紀錄（狀態查詢顯示「不需核對」，分類改了重送會再比一次）。"""
+        ref = f"cash_txn:{it['cash_txn_id']}"
+        item = {k: (str(v) if isinstance(v, date) else v) for k, v in it.items()}
+        item["company_id"] = company_id
+        row = next((r for r in self.s.scalars(select(ReviewItem).where(ReviewItem.kind == "bank_only", ReviewItem.ref == ref))
+                    if (r.resolution or {}).get("auto_skipped")), None)
+        if row is None:
+            row = ReviewItem(kind="bank_only", company_id=company_id, ref=ref, period_key=str(it["txn_date"])[:7], payload={})
+            self.s.add(row)
+        row.payload = {"item": item, "reason": reason}
+        row.status, row.resolved_by, row.resolved_at = "dismissed", "system", datetime.now(timezone.utc)
+        row.resolution = {"auto_skipped": True, "category": self._cat(it)}
+        self.s.flush()
+        return {"cash_txn_id": it["cash_txn_id"], "status": "skipped",
+                "reason": f"現金流分類：{self._cat(it)}（不需核對）；{reason}"}
 
     # ------------------------------------------------------------------ 查詢核對狀態
     def status(self, txn_ids: list[str]) -> dict[str, Any]:
@@ -152,7 +203,7 @@ class BankMatchService:
             cur = reviews.get(it.ref)
             if cur is None or it.created_at > cur.created_at:
                 reviews[it.ref] = it
-        out, counts = [], {"matched": 0, "review": 0, "dismissed": 0, "unknown": 0}
+        out, counts = [], {"matched": 0, "review": 0, "dismissed": 0, "skipped": 0, "unknown": 0}
         for txn in ids:
             r: dict[str, Any] = {"cash_txn_id": txn}
             if txn in by_txn:
@@ -165,6 +216,8 @@ class BankMatchService:
             elif (rv := reviews.get(f"cash_txn:{txn}")) is not None:
                 if rv.status == "open":
                     r.update(status="review", summary=(rv.payload or {}).get("reason") or "待確認")
+                elif rv.status == "dismissed" and (rv.resolution or {}).get("auto_skipped"):
+                    r.update(status="skipped", summary=f"現金流分類：{(rv.resolution or {}).get('category') or ''}（不需核對）")
                 elif rv.status == "dismissed":
                     r.update(status="dismissed", summary="在帳務系統略過")
                 else:
@@ -323,6 +376,8 @@ class BankMatchService:
 
     def _review(self, it: dict[str, Any], company_id: str, cp: Counterparty | None, docs: list[Document],
                 reason: str) -> dict[str, Any]:
+        if self._quiet(it):
+            return self._skip(it, company_id, reason)
         suggestion = None
         if docs:
             suggestion = {"counterparty_id": str(cp.id) if cp else None, "counterparty_name": cp.name if cp else None,

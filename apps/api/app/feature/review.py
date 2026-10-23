@@ -7,8 +7,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.errors import NotFound, ValidationFailed
-from app.feature.common import DocumentInput, LineInput
+from app.errors import AppError, NotFound, ValidationFailed
+from app.feature.common import DocumentInput, LineInput, add_months
 from app.feature.models import Settlement
 from app.feature.posting import PostingService
 from app.feature.settlement import SettlementService
@@ -90,10 +90,38 @@ class ReviewService:
         self.s.flush()
         return result
 
+    def batch(self, ids: list[uuid.UUID], action: str, payload: dict[str, Any], actor: str,
+              allowed=lambda company_id: True) -> dict[str, Any]:
+        """批次處理（例：9 月匯出的薪資全選 → P01、損益月份上個月）。每筆各自成功或失敗，不互相影響。"""
+        ok, failed = [], []
+        for item_id in ids:
+            item = self.ops.review(item_id)
+            if item is None or item.status != "open" or not allowed(item.company_id):
+                failed.append({"id": str(item_id), "message": "待確認項目不存在或已處理"})
+                continue
+            p = dict(payload)
+            if action == "create_document":
+                it = (item.payload or {}).get("item") or {}
+                month = str(it.get("txn_date", ""))[:7]
+                mode = payload.get("period_mode", "same")
+                p["period_key"] = (add_months(month, -1) if mode == "prev"
+                                   else payload.get("period_key") if mode == "fixed" else month)
+                if not p["period_key"]:
+                    failed.append({"id": str(item_id), "message": "請指定損益月份"})
+                    continue
+                p.setdefault("counterparty_name", it.get("counterparty_name"))
+            try:
+                with self.s.begin_nested():
+                    self.resolve(item_id, action, p, actor)
+                ok.append(str(item_id))
+            except AppError as e:
+                failed.append({"id": str(item_id), "message": e.message})
+        return {"ok": ok, "failed": failed}
+
     def _bank_only_document(self, it: dict, payload: dict, actor: str):
         lines_in = payload.get("lines") or [{"category_code": payload["category_code"], "amount": it["amount"],
                                              "store_id": payload.get("store_id")}]
-        period = str(it["txn_date"])[:7]
+        period = payload.get("period_key") or str(it["txn_date"])[:7]   # 損益月份（例：9 月匯的 8 月薪資）
         doc_type = "payable" if it["direction"] == "out" else "receivable"
         lines = []
         for ln in lines_in:

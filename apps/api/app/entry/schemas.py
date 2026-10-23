@@ -93,6 +93,14 @@ class ResolveIn(BaseModel):
     payload: dict = {}
 
 
+class BatchResolveIn(BaseModel):
+    """批次處理待確認。create_document 時 payload：category_code、period_mode（same 同月／prev 上個月／fixed 指定）、
+    period_key（fixed 時）、store_id（可省略＝公司層級）。"""
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    action: Literal["create_document", "dismiss", "settle_suggestion", "acknowledge"]
+    payload: dict = {}
+
+
 class CloseIn(BaseModel):
     acknowledge_unallocated: bool = False
 
@@ -204,6 +212,9 @@ class BankTxnIn(BaseModel):
     cash_account_bank: str | None = None
     cash_account_name: str | None = None
     cash_account_last4: str | None = None
+    # 現金流系統的分類（例：EXP_SAL 薪資）；屬於「不需核對」的分類對不到單據時不進待確認
+    cash_category_code: str | None = None
+    cash_category_name: str | None = None
 
 
 class BankTxnRef(BaseModel):

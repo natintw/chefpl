@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     accrual_lookback_months: int = 3
     opening_date: str = "2026-11-01"
     fee_diff_tolerance: int = 100
+    # 現金流系統的這些分類對不到單據時不進待確認，標「不需核對」（現金存提、內部調度、更正調整）
+    bank_quiet_categories: str = "CSH_WDL,CSH_DEP,ADJ_COR,INT_TRN,INT_REV"
 
     # ===== AI =====
     anthropic_api_key: str = ""

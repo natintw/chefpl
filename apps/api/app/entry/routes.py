@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.db import get_ledger_session
 from app.entry import serializers as ser
 from app.entry.deps import current_user, need
-from app.entry.schemas import (CashPaymentIn, AccrualBatchIn, AccrualTemplateIn, CloseIn, CounterpartyIn, CounterpartyPatch,
+from app.entry.schemas import (BatchResolveIn, CashPaymentIn, AccrualBatchIn, AccrualTemplateIn, CloseIn, CounterpartyIn, CounterpartyPatch,
                                DocumentCreate, DocumentPatch, LinkAccrualIn, RecognizeIn, RecurringIn, ReopenIn,
                                ResolveIn, RuleIn, VoidIn)
 from app.errors import Forbidden, NotFound, ValidationFailed
@@ -308,6 +308,14 @@ def review_items(kind: str | None = None, company_id: str | None = None, period:
     items = OpsRepository(s).list_reviews(company_ids=cids, kind=kind, period=period)
     return {"items": [{"id": str(i.id), "kind": i.kind, "company_id": i.company_id, "period": i.period_key,
                        "ref": i.ref, "payload": i.payload, "created_at": i.created_at.isoformat()} for i in items]}
+
+
+@router.post("/review-items/batch")
+def batch_resolve(body: BatchResolveIn, user: UserPrincipal = Depends(need("review.resolve")),
+                  s: Session = Depends(get_ledger_session, scope="function")):
+    """批次處理待確認：例如勾選 9 月的薪資匯款，一次建立 P01 薪資單據、損益記在 8 月。"""
+    return ReviewService(s).batch(body.ids, body.action, body.payload, user.actor,
+                                  allowed=lambda cid: user.scope.allows_company(cid))
 
 
 @router.post("/review-items/{item_id}/resolve")

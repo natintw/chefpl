@@ -8,6 +8,7 @@ import { Empty, ErrorBox, FieldErrors, Skeleton, Tag, useToast } from "@/compone
 import { ApiError, apiSend, useApi } from "@/lib/api";
 import { money, REVIEW_LABEL } from "@/lib/format";
 import { ManualMatch } from "@/components/ManualMatch";
+import { BankReviewTable } from "@/components/BankReviewTable";
 import type { ReviewItem } from "@/lib/types";
 import Link from "next/link";
 
@@ -22,7 +23,8 @@ export default function ReviewPage() {
     items.forEach((i) => m.set(i.kind, (m.get(i.kind) || 0) + 1));
     return [...m.entries()];
   }, [items]);
-  const shown = items.filter((i) => !kind || i.kind === kind);
+  const shown = items.filter((i) => (!kind || i.kind === kind) && i.kind !== "bank_only");
+  const bankItems = items.filter((i) => i.kind === "bank_only");
   const newCps = items.filter((i) => i.kind === "new_counterparty");
   const toast = useToast();
   const [bulk, setBulk] = useState(false);
@@ -57,6 +59,10 @@ export default function ReviewPage() {
         <div className="card"><Empty title="沒有待確認的項目" action={<Link className="btn pri" href={q.keep("/close")}>前往月結</Link>}>
           這個月的帳都有人確認過了，可以去月結。</Empty></div>
       )}
+      {(!kind || kind === "bank_only") && bankItems.length > 0 && (
+        <BankReviewTable items={bankItems} onDone={(ids) => setDone((s) => new Set([...s, ...ids]))}
+                         renderDetail={(it) => <Card it={it} embedded onDone={() => setDone((s) => new Set(s).add(it.id))} />} />
+      )}
       <div className="stack" style={{ maxWidth: 960 }}>
         {shown.map((it) => <Card key={it.id} it={it} onDone={() => setDone((s) => new Set(s).add(it.id))} />)}
       </div>
@@ -64,7 +70,13 @@ export default function ReviewPage() {
   );
 }
 
-function Card({ it, onDone }: { it: ReviewItem; onDone: () => void }) {
+function addMonth(m: string, n: number) {
+  const [y, mo] = m.split("-").map(Number);
+  const d = new Date(y, mo - 1 + n, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function Card({ it, onDone, embedded }: { it: ReviewItem; onDone: () => void; embedded?: boolean }) {
   const toast = useToast();
   const { companyName, storeName, categories, categoryName } = useDirectory();
   const [busy, setBusy] = useState(false);
@@ -75,6 +87,10 @@ function Card({ it, onDone }: { it: ReviewItem; onDone: () => void }) {
   const [cpName, setCpName] = useState<string>(bank?.counterparty_name || "");
   const [remember, setRemember] = useState(true);
   const [manual, setManual] = useState(false);
+  const txnMonth = String(bank?.txn_date || "").slice(0, 7);
+  const [pMode, setPMode] = useState<"same" | "prev" | "fixed">(bank?.cash_category_code === "EXP_SAL" || bank?.cash_category_code === "EXP_SOC" ? "prev" : "same");
+  const [pMonth, setPMonth] = useState("");
+  const periodKey = pMode === "prev" ? addMonth(txnMonth, -1) : pMode === "fixed" ? pMonth : txnMonth;
 
   async function resolve(action: string, payload: Record<string, unknown> = {}, msg = "已處理") {
     setBusy(true); setErr(null);
@@ -94,7 +110,7 @@ function Card({ it, onDone }: { it: ReviewItem; onDone: () => void }) {
   );
 
   return (
-    <article className="card pad stack" aria-label={REVIEW_LABEL[it.kind] || it.kind}>
+    <article className={embedded ? "pad stack" : "card pad stack"} aria-label={REVIEW_LABEL[it.kind] || it.kind}>
       <div><Tag kind={tagKind as never}>{REVIEW_LABEL[it.kind] || it.kind}</Tag> <span className="small">{companyName(it.company_id)}{it.period ? `・${it.period}` : ""}</span>
         <h2 style={{ marginTop: 6 }}>{title(it)}</h2></div>
 
@@ -138,8 +154,16 @@ function Card({ it, onDone }: { it: ReviewItem; onDone: () => void }) {
         {it.kind === "bank_only" && <>
           {catSelect(bank?.direction === "out" ? ["expense", "balance"] : ["income", "balance"])}
           <label className="ctl"><span className="k">對象</span><input value={cpName} onChange={(e) => setCpName(e.target.value)} placeholder="例：臺灣銀行" /></label>
-          <button className="btn pri" disabled={busy || !cat} onClick={() => resolve("create_document", { category_code: cat, counterparty_name: cpName || undefined },
-            `已建立已結清單據：${categoryName(cat)} ${money(bank?.amount)}`)}>建立已結清單據</button>
+          <label className="ctl"><span className="k">損益月份</span>
+            <select value={pMode} onChange={(e) => setPMode(e.target.value as "same" | "prev" | "fixed")}>
+              <option value="same">交易當月 {txnMonth}</option><option value="prev">上個月 {txnMonth && addMonth(txnMonth, -1)}</option>
+              <option value="fixed">指定月份</option>
+            </select></label>
+          {pMode === "fixed" && <label className="ctl"><span className="k">月份</span>
+            <input type="month" value={pMonth} onChange={(e) => setPMonth(e.target.value)} /></label>}
+          <button className="btn pri" disabled={busy || !cat || !periodKey} onClick={() => resolve("create_document",
+            { category_code: cat, counterparty_name: cpName || undefined, period_key: periodKey },
+            `已建立已結清單據：${categoryName(cat)} ${money(bank?.amount)}（${periodKey}）`)}>建立已結清單據</button>
         </>}
         {it.kind === "unclassified" && <>
           {catSelect(["expense", "income", "balance"])}
