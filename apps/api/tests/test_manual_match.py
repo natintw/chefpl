@@ -178,3 +178,21 @@ def test_batch_fixed_month_company_level(client, svc_headers):
                                                     "columns": "month"}).json()
     p01 = [l for s in pl["sections"] for l in s["lines"] if l["category_code"] == "P01"]
     assert p01 and p01[0]["values"]["total"] == 14541
+
+
+def test_batch_move_to_store_and_overview_shows_company_level(client, svc_headers):
+    _send(client, svc_headers, _txn("MV1", 20000, counterparty_name="施駿緯", txn_date="2026-09-07", cash_account_id="acc-3312"))
+    it = next(i for i in client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]
+              if i["payload"]["item"]["cash_txn_id"] == "MV1")
+    client.post("/api/v1/review-items/batch", json={"ids": [it["id"]], "action": "create_document",
+                                                   "payload": {"category_code": "P01", "period_mode": "fixed", "period_key": "2026-08",
+                                                               "store_by_item": {it["id"]: ""}}})
+    ov = client.get("/api/v1/pl/overview", params={"period": "2026-08"}).json()
+    assert ov["stores_with_data"] == 0 and ov["unallocated_amount"] != 0      # 總覽要顯示公司層級
+    doc = client.get("/api/v1/documents", params={"company_id": "comp-2", "period": "2026-08", "doc_type": "payable"}).json()["items"][0]
+    r = client.post("/api/v1/documents/batch-store", json={"document_ids": [doc["id"]], "store_id": "store-ys-01"})
+    assert r.status_code == 200 and r.json()["ok"] == [doc["id"]], r.text
+    pl = client.get("/api/v1/pl/statement", params={"period_from": "2026-08", "period_to": "2026-08", "company_id": "comp-2",
+                                                    "store_id": "store-ys-01", "columns": "month"}).json()
+    assert [l for s in pl["sections"] for l in s["lines"] if l["category_code"] == "P01"][0]["values"]["total"] == 20000
+    assert client.get(f"/api/v1/documents/{doc['id']}").json()["settle_status"] == "settled"

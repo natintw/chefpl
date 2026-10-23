@@ -42,7 +42,7 @@ export default function OverviewPage() {
       {cur.error && <ErrorBox error={cur.error} onRetry={cur.reload} />}
       {cur.loading && !d && <><KpiSkeleton /><div className="card"><Skeleton rows={8} /></div></>}
 
-      {d && d.stores_with_data === 0 && (
+      {d && d.stores_with_data === 0 && !d.unallocated_amount && (  /* 只有公司層級（未分攤）的金額也算有資料 */
         <div className="card">
           <Empty title={`${q.period} 還沒有任何帳務資料`}
                  action={<Link className="btn pri" href={q.keep("/imports")}>從匯入應付帳款表開始</Link>}>
@@ -51,7 +51,7 @@ export default function OverviewPage() {
         </div>
       )}
 
-      {d && d.stores_with_data > 0 && (
+      {d && (d.stores_with_data > 0 || d.unallocated_amount !== 0) && (
         <>
           {(missingAll.length > 0 || d.unallocated_amount !== 0) && (
             <section className="band" aria-label="資料完整度">

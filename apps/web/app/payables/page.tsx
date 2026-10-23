@@ -45,7 +45,8 @@ export default function PayablesPage() {
   const filtered = !!(status || search || q.store);
   const canPay = type !== "advance_receipt";
   const payable = (d: Doc) => d.status !== "void" && (d.outstanding || 0) > 0;
-  const pageOpen = items.filter(payable);
+  const selectable = (d: Doc) => d.status !== "void";   // 改門市：已付的也可以選；現金付款只處理未結清的
+  const pageOpen = items.filter(selectable);
   const allPicked = pageOpen.length > 0 && pageOpen.every((d) => picked.has(d.id));
   const toggle = (d: Doc) => setPicked((m) => { const n = new Map(m); n.has(d.id) ? n.delete(d.id) : n.set(d.id, d); return n; });
   const toggleAll = () => setPicked((m) => {
@@ -94,7 +95,10 @@ export default function PayablesPage() {
               </select></label>
           </div>
           {canPay && picked.size > 0 && (
-            <CashBar docs={[...picked.values()]} type={type} onDone={() => { setPicked(new Map()); refresh(); }}
+            <StoreBar docs={[...picked.values()]} onDone={() => { setPicked(new Map()); refresh(); }} />
+          )}
+          {canPay && [...picked.values()].some(payable) && (
+            <CashBar docs={[...picked.values()].filter(payable)} type={type} onDone={() => { setPicked(new Map()); refresh(); }}
                      onClear={() => setPicked(new Map())} />
           )}
           {list.loading && !list.data && <Skeleton rows={8} />}
@@ -107,7 +111,7 @@ export default function PayablesPage() {
             <div className="tbl-wrap">
               <table>
                 <thead><tr>{canPay && <th style={{ width: 36 }}>
-                  <input type="checkbox" aria-label="全選這一頁未結清的單據" checked={allPicked} disabled={!pageOpen.length}
+                  <input type="checkbox" aria-label="全選這一頁的單據" checked={allPicked} disabled={!pageOpen.length}
                          onChange={toggleAll} style={{ width: 18, minHeight: 18 }} /></th>}<th>對象</th><th>公司／門市</th><th>發票</th><th>來源</th><th>到期日</th><th className="r">金額</th><th className="r">已結清</th><th className="r">未結清</th><th>狀態</th></tr></thead>
                 <tbody>
                   {items.map((d) => {
@@ -116,7 +120,7 @@ export default function PayablesPage() {
                     return (
                       <tr key={d.id} className={`clickable ${docId === d.id ? "sel" : ""}`} onClick={() => setDocId(d.id)}>
                         {canPay && <td onClick={(e) => e.stopPropagation()}>
-                          {payable(d) && <input type="checkbox" aria-label={`勾選 ${d.counterparty?.name || "單據"}`} checked={picked.has(d.id)}
+                          {selectable(d) && <input type="checkbox" aria-label={`勾選 ${d.counterparty?.name || "單據"}`} checked={picked.has(d.id)}
                                                 onChange={() => toggle(d)} style={{ width: 18, minHeight: 18 }} />}</td>}
                         <td><div style={{ fontWeight: 500 }}>{d.counterparty?.name || "（未指定）"}</div>
                           <div className="small">{d.memo || d.period_keys.join("、")}{d.status === "draft" ? "・草稿" : ""}</div></td>
@@ -199,6 +203,42 @@ function CashBar({ docs, type, onDone, onClear }: { docs: Doc[]; type: T; onDone
       </div>
       <FieldErrors error={err} />
       <div className="small">只改已{verb}／未{verb}，不影響損益。標錯了：點單據，在右側「結清紀錄」按取消。</div>
+    </div>
+  );
+}
+
+/** 勾選的單據一次改到某家門市（例：先記在公司層級的薪資改到青年店）。POST /documents/batch-store */
+function StoreBar({ docs, onDone }: { docs: Doc[]; onDone: () => void }) {
+  const toast = useToast();
+  const { dir } = useDirectory();
+  const root = (cid: string) => {
+    let c = dir.companies.find((x) => x.id === cid);
+    while (c?.parent_company_id) c = dir.companies.find((x) => x.id === c!.parent_company_id) || undefined;
+    return c?.id || cid;
+  };
+  const roots = new Set(docs.map((d) => root(d.company_id)));
+  const stores = roots.size === 1 ? dir.stores.filter((st) => root(st.company_id) === [...roots][0]) : [];
+  const [store, setStore] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function go() {
+    setBusy(true);
+    try {
+      const r = await apiSend<{ ok: string[]; failed: { message: string }[] }>("POST", "/documents/batch-store",
+        { document_ids: docs.map((d) => d.id), store_id: store });
+      toast(r.failed.length ? `改好 ${r.ok.length} 張，${r.failed.length} 張失敗：${r.failed[0].message}` : `已改到${store ? "門市" : "公司層級"}：${r.ok.length} 張`,
+            r.failed.length ? "error" : "ok");
+      onDone();
+    } catch (e) { toast((e as Error).message || "改門市失敗", "error"); } finally { setBusy(false); }
+  }
+  return (
+    <div style={{ margin: "12px 14px 0", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+      <label className="ctl"><span className="k">改門市（勾選 {docs.length} 張）</span>
+        <select value={store} onChange={(e) => setStore(e.target.value)} disabled={roots.size !== 1}>
+          <option value="">公司層級（不分門市）</option>
+          {stores.map((st) => <option key={st.id} value={st.id}>{st.code} {st.name}</option>)}
+        </select></label>
+      <button className="btn" disabled={busy || roots.size !== 1} onClick={go}>{busy ? "處理中…" : "改門市"}</button>
+      {roots.size > 1 && <span className="small">勾選的跨不同公司，請分開改</span>}
     </div>
   );
 }

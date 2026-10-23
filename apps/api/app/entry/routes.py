@@ -11,10 +11,10 @@ from sqlalchemy.orm import Session
 from app.db import get_ledger_session
 from app.entry import serializers as ser
 from app.entry.deps import current_user, need
-from app.entry.schemas import (BatchResolveIn, CashPaymentIn, AccrualBatchIn, AccrualTemplateIn, CloseIn, CounterpartyIn, CounterpartyPatch,
+from app.entry.schemas import (BatchResolveIn, BatchStoreIn, CashPaymentIn, AccrualBatchIn, AccrualTemplateIn, CloseIn, CounterpartyIn, CounterpartyPatch,
                                DocumentCreate, DocumentPatch, LinkAccrualIn, RecognizeIn, RecurringIn, ReopenIn,
                                ResolveIn, RuleIn, VoidIn)
-from app.errors import Forbidden, NotFound, ValidationFailed
+from app.errors import AppError, Forbidden, NotFound, ValidationFailed
 from app.feature.accruals import AccrualService, AdvanceService
 from app.feature.cash_payment import CashPaymentService
 from app.feature.common import LineInput
@@ -184,6 +184,26 @@ def patch_document(doc_id: uuid.UUID, body: DocumentPatch, user: UserPrincipal =
     d = PostingService(s).update(doc_id, body.version, user.actor, memo=body.memo, due_date=body.due_date,
                                  lines=lines, settle_amount=body.settle_amount, tax_amount=body.tax_amount)
     return ser.document(d)
+
+
+@router.post("/documents/batch-store")
+def batch_store(body: BatchStoreIn, user: UserPrincipal = Depends(need("doc.edit")),
+                s: Session = Depends(get_ledger_session, scope="function")):
+    """勾選的單據一次改到某家門市（例：先記在公司層級的薪資改到青年店）。每張各自成功或失敗。"""
+    svc = PostingService(s)
+    ok, failed = [], []
+    for doc_id in body.document_ids:
+        try:
+            with s.begin_nested():
+                d = _doc_or_404(s, user, doc_id)
+                lines = [LineInput(l.period_key, l.category_code, l.amount, body.store_id or None, l.description) for l in d.lines]
+                svc.update(doc_id, d.version, user.actor, lines=lines)
+                if d.counterparty is not None and body.store_id:
+                    d.counterparty.default_store_id = body.store_id   # 下次同一個對象自動帶這家門市
+            ok.append(str(doc_id))
+        except AppError as e:
+            failed.append({"id": str(doc_id), "message": e.message})
+    return {"ok": ok, "failed": failed}
 
 
 @router.post("/documents/{doc_id}/void")

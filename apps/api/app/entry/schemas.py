@@ -93,6 +93,12 @@ class ResolveIn(BaseModel):
     payload: dict = {}
 
 
+class BatchStoreIn(BaseModel):
+    """批次改門市：把單據的明細改到某家門市（空字串＝公司層級）。"""
+    document_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    store_id: str = ""
+
+
 class BatchResolveIn(BaseModel):
     """批次處理待確認。create_document 時 payload：category_code、period_mode（same 同月／prev 上個月／fixed 指定）、
     period_key（fixed 時）、store_id（可省略＝公司層級）。"""
