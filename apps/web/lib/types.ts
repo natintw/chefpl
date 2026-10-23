@@ -14,8 +14,12 @@ export type Completeness = { level: "complete" | "partial"; payroll: string; ope
 export type OverviewRow = Kpis & { company: { id: string; name: string }; store: { id: string; name: string };
   revenue: number; store_operating_profit: number; completeness: Completeness };
 
+/** 公司小計：旗下門市＋公司層級（未分攤）。集團內交易在公司層級不沖銷。 */
+export type CompanySubtotal = Kpis & { id: string; name: string; parent_company_id: string | null; revenue: number;
+  stores_operating_profit: number; unallocated_amount: number; operating_profit: number; net_profit: number };
 export type Overview = { period: string; totals: Kpis & { revenue: number; gross_profit: number;
-  store_operating_profit: number; net_profit: number }; rows: OverviewRow[]; unallocated_amount: number;
+  store_operating_profit: number; net_profit: number }; rows: OverviewRow[]; companies?: CompanySubtotal[];
+  unallocated_amount: number;
   intercompany_unmatched: number; accrual_amount: number; advance_balance: number; stores_with_data: number };
 
 export type Statement = {

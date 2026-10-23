@@ -3,6 +3,7 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { ReactNode, Suspense } from "react";
 import { useApi } from "@/lib/api";
+import { GROUP_NAME } from "@/lib/format";
 import { DirectoryProvider, useDirectory } from "./directory";
 import { ToastProvider } from "./ui";
 
@@ -33,7 +34,7 @@ function Side() {
   return (
     <aside className="side">
       <div className="brand">帳務損益</div>
-      <div className="org">博竑・鄧師傅 集團</div>
+      <div className="org">{GROUP_NAME} 集團</div>
       <nav className="nav" aria-label="主選單">
         {NAV.map((g) => (
           <div key={g.group} style={{ display: "contents" }}>

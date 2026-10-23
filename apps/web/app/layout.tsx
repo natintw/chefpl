@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Shell } from "@/components/Shell";
 import "./globals.css";
 
-export const metadata: Metadata = { title: "帳務損益", description: "博竑・鄧師傅集團 帳務損益系統" };
+export const metadata: Metadata = { title: "帳務損益", description: "鄧師傅餐飲集團 帳務損益系統" };
 export const viewport: Viewport = { width: "device-width", initialScale: 1 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

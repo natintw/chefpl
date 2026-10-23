@@ -7,7 +7,7 @@ import { PeriodPicker, ScopePicker, useQuery } from "@/components/filters";
 import { useDirectory } from "@/components/directory";
 import { Empty, ErrorBox, Skeleton, Tag } from "@/components/ui";
 import { useApi } from "@/lib/api";
-import { addMonths, delta, money, pct, PRIME_WARN, SOURCE_LABEL } from "@/lib/format";
+import { addMonths, delta, GROUP_NAME, money, pct, PRIME_WARN, SOURCE_LABEL } from "@/lib/format";
 import type { Statement } from "@/lib/types";
 
 type Row = { cls: string; label: string; code?: string; values: Record<string, number> };
@@ -29,7 +29,7 @@ export default function PLPage() {
   const cols = st.data?.columns || [];
   const revenueOf = (k: string) => st.data?.sections.find((s) => s.section === "revenue")?.subtotal[k] || 0;
   const isEmpty = st.data && rows.every((r) => Object.values(r.values).every((v) => !v));
-  const scopeTitle = q.store ? (q.store === "unallocated" ? "公司層級（未分攤）" : storeName(q.store)) : q.company ? companyName(q.company) : "集團";
+  const scopeTitle = q.store ? (q.store === "unallocated" ? "公司層級（未分攤）" : storeName(q.store)) : q.company ? companyName(q.company) : `${GROUP_NAME}集團`;
 
   return (
     <>

@@ -34,6 +34,12 @@ class _Col:
         self.ic_rev = 0
         self.ic_cogs = 0
 
+    def merge(self, other: "_Col") -> None:
+        for k, v in other.sec.items():
+            self.sec[k] += v
+        for k, v in other.cat.items():
+            self.cat[k] = self.cat.get(k, 0) + v
+
     def add(self, row: dict[str, Any]) -> None:
         amt = int(row["amount"])
         # 營業外同一區塊有收入也有支出：收入記正、支出記負，小計即淨額；其他區塊一律記正數
@@ -160,24 +166,36 @@ class ReportService:
         companies = [c for c in self.dir.list_companies() if cids is None or c.id in cids]
         accrual_by_company = self._accrual_amounts(period, cids)
         adv = self.docs.advance_balance(cids)
-        out_rows, unallocated = [], 0
+        out_rows, unallocated, company_rows = [], 0, []
         for c in companies:
+            sub = _Col()  # 公司小計＝旗下門市＋公司層級（未分攤），集團內交易在公司層級不沖銷
             for st in self.dir.list_stores(c.id):
                 if not scope.allows_store(c.id, st.id):
                     continue
                 col = per.get(st.id, _Col())
+                sub.merge(col)
                 out_rows.append({"company": {"id": c.id, "name": c.name}, "store": {"id": st.id, "name": st.name},
                                  "revenue": col.revenue, "store_operating_profit": col.store_op, **col.kpis(),
                                  "completeness": self._completeness(c.id, st.id, period)})
+            stores_op = sub.store_op
             un = per.get(UNALLOCATED + c.id)
+            un_amount = -un.store_op if un is not None else 0
             if un is not None:
-                unallocated += -un.store_op
+                unallocated += un_amount
+                sub.merge(un)
+            if scope.store_only:  # 只看得到門市的人（店長）不顯示公司小計
+                continue
+            company_rows.append({"id": c.id, "name": c.name, "parent_company_id": c.parent_company_id,
+                                 "revenue": sub.revenue, "stores_operating_profit": stores_op,
+                                 "unallocated_amount": un_amount, "operating_profit": sub.store_op,
+                                 "net_profit": sub.net, **sub.kpis()})
         retail = [r for r in out_rows if r["store"]["id"] in per]
         return {
             "period": period,
             "totals": {"revenue": group.revenue, "gross_profit": group.gross,
                        "store_operating_profit": group.store_op, "net_profit": group.net, **group.kpis()},
             "rows": out_rows,
+            "companies": company_rows,
             "unallocated_amount": unallocated,
             "intercompany_unmatched": group.ic_rev - group.ic_cogs,
             "accrual_amount": sum(accrual_by_company.values()),

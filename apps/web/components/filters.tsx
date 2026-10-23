@@ -2,7 +2,7 @@
 /** 月份與範圍寫在網址上（?period=&company=&store=），切換畫面時保留（開發文件 11.3）。 */
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback } from "react";
-import { defaultPeriod } from "@/lib/format";
+import { defaultPeriod, GROUP_NAME } from "@/lib/format";
 import { useDirectory } from "./directory";
 
 export function useQuery() {
@@ -55,7 +55,7 @@ export function ScopePicker({ allowGroup = true, withStore = true }: { allowGrou
       <label className="ctl">
         <span className="k">公司</span>
         <select value={q.company} aria-label="公司" onChange={(e) => q.set({ company: e.target.value || null, store: null })}>
-          {allowGroup && <option value="">集團（全部）</option>}
+          {allowGroup && <option value="">{GROUP_NAME}（全集團）</option>}
           {dir.companies.filter((c) => !c.parent_company_id).flatMap((c) => [
             <option key={c.id} value={c.id}>{c.name}</option>,
             ...dir.companies.filter((b) => b.parent_company_id === c.id)

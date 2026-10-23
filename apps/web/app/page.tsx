@@ -6,8 +6,8 @@ import { PageHeader } from "@/components/Shell";
 import { PeriodPicker, useQuery } from "@/components/filters";
 import { Empty, ErrorBox, KpiSkeleton, Skeleton, Tag } from "@/components/ui";
 import { useApi } from "@/lib/api";
-import { addMonths, money, pct, PRIME_WARN } from "@/lib/format";
-import type { Overview, OverviewRow } from "@/lib/types";
+import { addMonths, GROUP_NAME, money, pct, PRIME_WARN } from "@/lib/format";
+import type { CompanySubtotal, Overview, OverviewRow } from "@/lib/types";
 
 export default function OverviewPage() {
   const q = useQuery();
@@ -15,10 +15,14 @@ export default function OverviewPage() {
   const prev = useApi<Overview>("/pl/overview", { period: addMonths(q.period, -1) });
 
   const groups = useMemo(() => {
-    const m = new Map<string, { name: string; rows: OverviewRow[] }>();
+    const m = new Map<string, { name: string; rows: OverviewRow[]; sub?: CompanySubtotal }>();
     (cur.data?.rows || []).forEach((r) => {
       if (!m.has(r.company.id)) m.set(r.company.id, { name: r.company.name, rows: [] });
       m.get(r.company.id)!.rows.push(r);
+    });
+    (cur.data?.companies || []).forEach((c) => {
+      if (!m.has(c.id)) m.set(c.id, { name: c.name, rows: [] });
+      m.get(c.id)!.sub = c;
     });
     return [...m.entries()];
   }, [cur.data]);
@@ -31,7 +35,7 @@ export default function OverviewPage() {
 
   return (
     <>
-      <PageHeader crumb="損益" title="損益總覽" sub={`${q.period}・集團`}>
+      <PageHeader crumb="損益" title="損益總覽" sub={`${q.period}・${GROUP_NAME}集團`}>
         <PeriodPicker />
       </PageHeader>
 
@@ -79,16 +83,19 @@ export default function OverviewPage() {
               <div className="tbl-wrap">
                 <table>
                   <thead><tr><th>公司／門市</th><th className="r">營收</th><th className="r">Food cost</th><th className="r">Labor</th>
-                    <th className="r">Prime</th><th className="r">四牆利潤</th><th className="r">利潤率</th><th>資料</th></tr></thead>
+                    <th className="r">Prime</th><th className="r">營業利益</th><th className="r">利潤率</th><th>資料</th></tr></thead>
                   <tbody>
                     {groups.map(([cid, g]) => (
-                      <GroupRows key={cid} name={g.name} rows={g.rows} href={(r) => q.link("/pl", { company: r.company.id, store: r.store.id })} />
+                      <GroupRows key={cid} name={g.name} rows={g.rows} sub={g.sub}
+                                 companyHref={q.link("/pl", { company: cid, store: null })}
+                                 unallocHref={q.link("/pl", { company: cid, store: "unallocated" })}
+                                 href={(r) => q.link("/pl", { company: r.company.id, store: r.store.id })} />
                     ))}
-                    {d.unallocated_amount !== 0 && (
+                    {!d.companies && d.unallocated_amount !== 0 && (
                       <tr><td className="sub">公司層級（未分攤）</td><td className="r">—</td><td className="r">—</td><td className="r">—</td><td className="r">—</td>
                         <td className="num r neg">{money(-d.unallocated_amount)}</td><td className="r">—</td><td><Tag kind="warn">未分攤</Tag></td></tr>
                     )}
-                    <tr className="sum"><td>集團合計</td><td className="num r">{money(d.totals.revenue)}</td><td className="num r">{pct(d.totals.food_cost_pct)}</td>
+                    <tr className="sum"><td>{GROUP_NAME} 合計</td><td className="num r">{money(d.totals.revenue)}</td><td className="num r">{pct(d.totals.food_cost_pct)}</td>
                       <td className="num r">{pct(d.totals.labor_cost_pct)}</td>
                       <td className={`num r ${(d.totals.prime_cost_pct ?? 0) > PRIME_WARN ? "warnv" : ""}`}>{pct(d.totals.prime_cost_pct)}</td>
                       <td className="num r">{money(d.totals.store_operating_profit)}</td><td className="num r">{pct(d.totals.store_margin_pct)}</td>
@@ -96,7 +103,7 @@ export default function OverviewPage() {
                   </tbody>
                 </table>
               </div>
-              <p className="small" style={{ margin: 0, padding: "12px 16px" }}>金額為未稅。Food cost、Labor、Prime 以各門市營收計算；工廠另看製造成本。</p>
+              <p className="small" style={{ margin: 0, padding: "12px 16px" }}>金額為未稅。門市列的營業利益是四牆利潤；公司列是旗下門市加上公司層級費用，集團合計再沖銷集團內交易。Food cost、Labor、Prime 以營收計算；工廠另看製造成本。</p>
             </section>
 
             <aside className="card aside pad" aria-label="需要注意">
@@ -129,10 +136,23 @@ function Kpi({ label, value, foot, alert }: { label: string; value: React.ReactN
   );
 }
 
-function GroupRows({ name, rows, href }: { name: string; rows: OverviewRow[]; href: (r: OverviewRow) => string }) {
+function GroupRows({ name, rows, sub, href, companyHref, unallocHref }: { name: string; rows: OverviewRow[]; sub?: CompanySubtotal;
+  href: (r: OverviewRow) => string; companyHref: string; unallocHref: string }) {
+  const hot = (sub?.prime_cost_pct ?? 0) > PRIME_WARN;
   return (
     <>
-      <tr className="co"><td colSpan={8}>{name}</td></tr>
+      {sub ? (
+        <tr className="co">
+          <td><Link href={companyHref} style={{ color: "var(--text)" }}>{sub.parent_company_id ? "└ " : ""}{name}</Link></td>
+          <td className="num r">{money(sub.revenue)}</td>
+          <td className="num r">{pct(sub.food_cost_pct)}</td>
+          <td className="num r">{pct(sub.labor_cost_pct)}</td>
+          <td className={`num r ${hot ? "warnv" : ""}`}>{pct(sub.prime_cost_pct)}</td>
+          <td className="num r">{money(sub.operating_profit)}</td>
+          <td className="num r">{pct(sub.store_margin_pct)}</td>
+          <td className="small">公司小計</td>
+        </tr>
+      ) : <tr className="co"><td colSpan={8}>{name}</td></tr>}
       {rows.map((r) => {
         const est = r.completeness.level === "partial";
         const hot = (r.prime_cost_pct ?? 0) > PRIME_WARN;
@@ -150,6 +170,14 @@ function GroupRows({ name, rows, href }: { name: string; rows: OverviewRow[]; hr
           </tr>
         );
       })}
+      {sub && sub.unallocated_amount !== 0 && (
+        <tr>
+          <td><Link href={unallocHref} className="sub">公司層級（未分攤）</Link></td>
+          <td className="r">—</td><td className="r">—</td><td className="r">—</td><td className="r">—</td>
+          <td className="num r neg">{money(-sub.unallocated_amount)}</td><td className="r">—</td>
+          <td><Tag kind="warn">未分攤</Tag></td>
+        </tr>
+      )}
     </>
   );
 }

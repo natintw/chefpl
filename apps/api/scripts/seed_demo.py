@@ -50,11 +50,11 @@ def month(period: str, scale: float = 1.0, *, with_payroll=True):
     for st, base in (("store-ms-wenheng", 1_380_000), ("store-ms-main", 960_000)):
         doc(COMP[st], period, [("R01", s(base * .62), st), ("R02", s(base * .18), st), ("R03", s(base * .2), st)],
             vendor="POS 日結", doc_type="receivable", invoice=False, method="bank_paid", memo="POS 月結")
-    for st, base in (("store-ct-01", 820_000), ("store-ct-02", 640_000)):
+    for st, base in (("store-ct-01", 820_000),):
         doc(CT, period, [("R01", s(base * .7), st), ("R03", s(base * .3), st)], vendor="POS 日結",
             doc_type="receivable", invoice=False, method="bank_paid", memo="POS 月結")
     # 進貨
-    for comp, st, k in ((MS, "store-ms-wenheng", 1.0), (MSH, "store-ms-main", .7), (CT, "store-ct-01", .6), (CT, "store-ct-02", .48)):
+    for comp, st, k in ((MS, "store-ms-wenheng", 1.0), (MSH, "store-ms-main", .7), (CT, "store-ct-01", .6)):
         doc(comp, period, [("C01", s(118_000 * k), st)], vendor="協昌果菜行", due=f"{period}-28")
         doc(comp, period, [("C02", s(196_000 * k), st)], vendor="豬肉黃", due=f"{period}-28")
         doc(comp, period, [("C03", s(64_000 * k), st)], vendor="元華行")
@@ -65,7 +65,7 @@ def month(period: str, scale: float = 1.0, *, with_payroll=True):
     doc(CT, period, [("E06", s(12_400), "store-ct-01")], vendor="大同文具行", invoice=False, method="petty_cash", memo="零用金")
     if with_payroll:
         for comp, st, base in ((MS, "store-ms-wenheng", 312_000), (MSH, "store-ms-main", 228_000),
-                               (CT, "store-ct-01", 205_000), (CT, "store-ct-02", 168_000)):
+                               (CT, "store-ct-01", 205_000)):
             doc(comp, period, [("P01", s(base), st), ("P03", s(base * .11), st), ("P04", s(base * .06), st)],
                 vendor="薪資", invoice=False, method="bank_paid", memo=f"{period} 薪資")
 
@@ -91,13 +91,13 @@ doc(BH, CUR, [], vendor="年菜預購", doc_type="advance_receipt", invoice=Fals
     expected_delivery_date=f"{y + 1}-01-20", memo="年菜訂金")
 doc(MS, CUR, [("B01", 450_000, "store-ms-wenheng")], vendor="冷凍設備行", memo="冷凍櫃", asset_life_months=60)
 # 預估入帳：水電還沒來單
-doc(CT, CUR, [("O02", 30_000, "store-ct-02")], vendor="台灣電力公司", doc_type="accrual", invoice=False,
+doc(CT, CUR, [("O02", 30_000, "store-ct-01")], vendor="台灣電力公司", doc_type="accrual", invoice=False,
     accrual_mode="estimate_reverse", memo="電費預估")
 # 應付表匯入，其中一家新廠商規則沒命中 → 進待確認
 wb = Workbook(); ws = wb.active
 ws.append(["門市", "廠商", "發票號碼", "日期", "摘要", "金額"])
-ws.append(["門市一［暫定］", "阿明水電行", "", f"{CUR}-18", "廚房水管", 8_600])
-ws.append(["門市一［暫定］", "協昌果菜行", "AB12345678", f"{CUR}-27", "蔬菜補貨", 15_750])
+ws.append(["中正店", "阿明水電行", "", f"{CUR}-18", "廚房水管", 8_600])
+ws.append(["中正店", "協昌果菜行", "AB12345678", f"{CUR}-27", "蔬菜補貨", 15_750])
 buf = io.BytesIO(); wb.save(buf)
 r = c.post("/api/v1/imports", data={"kind": "ap_sheet", "company_id": CT, "period": CUR},
            files={"file": ("ap.xlsx", buf.getvalue())})

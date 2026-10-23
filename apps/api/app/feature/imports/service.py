@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import re
+
 import uuid
 from datetime import date, datetime, timezone
 from typing import Any
@@ -76,10 +78,15 @@ class ImportService:
     def _store(self, name: str | None, company_id: str, default: str | None) -> str | None:
         if not name:
             return default
-        for st in self.dir.list_stores():
-            if self.dir.same_legal_entity(st.company_id, company_id) and name in (st.name, st.code, st.id):
+        candidates = [st for st in self.dir.list_stores() if self.dir.same_legal_entity(st.company_id, company_id)]
+        for st in candidates:  # 完全相符：名稱、代號、ID
+            if name in (st.name, st.code, st.id):
                 return st.id
-        raise ValidationFailed(f"找不到門市「{name}」")
+        core = store_core(name)  # 寬鬆相符：「文衡店」＝「文衡門市」＝「文衡」
+        hits = [st for st in candidates if core and store_core(st.name) == core]
+        if len(hits) == 1:
+            return hits[0].id
+        raise ValidationFailed(f"找不到門市「{name}」" if not hits else f"門市「{name}」對到不只一家，請改用完整名稱或代號")
 
     def _ap_row(self, r: ParsedRow, batch: ImportBatch, store_id: str | None, actor: str):
         v = r.values
@@ -194,3 +201,15 @@ class ImportService:
                 "preview": [{"row": p["row"], "counterparty": p.get("vendor"),
                              "settle_amount": p["input"]["settle_amount"], "lines": p["input"]["lines"],
                              "status": p["input"].get("status")} for p in b.parsed[:200]]}
+
+
+_STORE_SUFFIXES = ("分店", "門市", "店")
+
+
+def store_core(name: str) -> str:
+    """去掉結尾的「分店／門市／店」與空白、全形括號註記，用來比對不同寫法的同一家門市。"""
+    n = re.sub(r"[\s　]|［.*?］|\[.*?\]|（.*?）|\(.*?\)", "", name or "")
+    for suf in _STORE_SUFFIXES:
+        if n.endswith(suf) and len(n) > len(suf):
+            return n[: -len(suf)]
+    return n

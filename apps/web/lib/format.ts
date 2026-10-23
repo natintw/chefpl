@@ -1,3 +1,6 @@
+/** 集團名稱：門市 → 公司 → 集團的最上層。 */
+export const GROUP_NAME = "鄧師傅餐飲";
+
 /** 金額：千分位；負數用括號（開發文件 11.5：不只靠顏色）；0 顯示「—」。 */
 export function money(n: number | null | undefined, opts: { zeroDash?: boolean } = {}): string {
   if (n === null || n === undefined) return "—";
