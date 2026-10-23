@@ -13,6 +13,10 @@
 認不出廠商、或金額湊不出唯一組合 → 進「待確認」（銀行有、單據無），能猜到的組合放在建議裡讓會計一鍵確認。
 
 收入（direction=in）：同一法人的未結清應收裡，金額完全相同且只有一張 → 標成已收；否則進待確認。
+
+刪除（event=bank_transactions.deleted）：現金流系統把匯錯的交易刪掉時呼叫。撤回這筆交易造成的一切：
+  付款配對取消（單據回到未付）、由這筆交易建立的單據作廢（已關帳的月份不動，改開待確認）、還沒處理的待確認撤下。
+  之後同一筆交易重新匯入，會當成新的再比對一次。
 """
 from __future__ import annotations
 
@@ -22,10 +26,12 @@ import uuid
 from datetime import date, timedelta
 from typing import Any
 
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.feature.models import Counterparty, Document
+from app.feature.models import Counterparty, Document, ReviewItem, Settlement
 from app.feature.settlement import SettlementService
 from app.seams.company import get_directory
 
@@ -72,7 +78,7 @@ class BankMatchService:
     def _one(self, it: dict[str, Any], actor: str) -> dict[str, Any]:
         txn = it["cash_txn_id"]
         base = {"cash_txn_id": txn}
-        if self.docs.txn_already_used(txn) or self.ops.review_exists("bank_only", f"cash_txn:{txn}"):
+        if self.docs.txn_already_used(txn) or self._has_live_review(txn):
             return {**base, "status": "duplicate"}
         acct = self.dir.get_bank_account(it["cash_account_id"])
         if acct is None:
@@ -110,6 +116,62 @@ class BankMatchService:
         reason = (f"「{cp.name}」有多種單據組合金額相同，請確認" if combo == "ambiguous"
                   else f"「{cp.name}」未付單據湊不出 {amount:,}")
         return self._review(it, acct.company_id, cp, [], reason)
+
+    def _has_live_review(self, txn: str) -> bool:
+        """這筆交易已經有待確認（處理中或已處理）。因交易被刪而撤下的不算，重新匯入時要再比一次。"""
+        for it in self.s.scalars(select(ReviewItem).where(ReviewItem.kind == "bank_only",
+                                                          ReviewItem.ref == f"cash_txn:{txn}")):
+            if not (it.resolution or {}).get("withdrawn"):
+                return True
+        return False
+
+    # ------------------------------------------------------------------ 刪除：撤回
+    def withdraw(self, txn_ids: list[str], actor: str) -> dict[str, Any]:
+        results, counts = [], {"withdrawn": 0, "not_found": 0, "needs_review": 0}
+        now = datetime.now(timezone.utc)
+        reason = "銀行交易已在現金流系統刪除"
+        for txn in dict.fromkeys(txn_ids):  # 去重、保留順序
+            touched, voided, dismissed, flagged = [], [], 0, []
+            # 1) 付款配對取消 → 單據回到未付（不影響損益：損益依發生月份，不看付了沒）
+            for st in self.s.scalars(select(Settlement).where(Settlement.cash_txn_id == txn,
+                                                              Settlement.reversed_at.is_(None))):
+                st.reversed_at = now
+                touched.append(st.document_id)
+            self.s.flush()
+            for doc_id in dict.fromkeys(touched):
+                doc = self.docs.get(doc_id)
+                self.s.refresh(doc)
+                self.settle.posting.recompute_settlement(doc)
+            # 2) 由這筆交易建立的單據（待確認裡「建立已結清單據」，例如手續費）→ 作廢；已關帳的月份改開待確認
+            for doc in self.s.scalars(select(Document).where(Document.source_kind == "bank_only",
+                                                             Document.source_ref == txn, Document.status != "void")):
+                closed = [p for p in {l.period_key for l in doc.lines} if self.ops.is_closed(doc.company_id, p)]
+                if closed:
+                    self.ops.open_review("import_warning", doc.company_id, f"document:{doc.id}",
+                                         {"document_id": str(doc.id), "message":
+                                          f"{reason}，但這張單據所在的 {'、'.join(sorted(closed))} 已關帳，請確認是否要重開調整"},
+                                         period_key=sorted(closed)[0])
+                    flagged.append(str(doc.id))
+                else:
+                    self.settle.posting.void(doc.id, reason, actor, force=True)
+                    voided.append(str(doc.id))
+            # 3) 還沒處理的待確認撤下（重新匯入時會再比一次）
+            for it in self.s.scalars(select(ReviewItem).where(ReviewItem.ref == f"cash_txn:{txn}",
+                                                              ReviewItem.status == "open")):
+                it.status, it.resolved_by, it.resolved_at = "dismissed", actor, now
+                it.resolution = {"withdrawn": True, "reason": reason}
+                dismissed += 1
+            for it in self.s.scalars(select(ReviewItem).where(ReviewItem.kind == "bank_only",
+                                                              ReviewItem.ref == f"cash_txn:{txn}",
+                                                              ReviewItem.status != "open")):
+                it.resolution = {**(it.resolution or {}), "withdrawn": True}
+            found = bool(touched or voided or dismissed or flagged)
+            status = "needs_review" if flagged else ("withdrawn" if found else "not_found")
+            counts[status] += 1
+            results.append({"cash_txn_id": txn, "status": status, "reopened_documents": [str(i) for i in dict.fromkeys(touched)],
+                            "voided_documents": voided, "dismissed_reviews": dismissed, "flagged_documents": flagged})
+        self.s.flush()
+        return {**counts, "results": results}
 
     # ------------------------------------------------------------------ 認廠商
     def _identify_vendor(self, it: dict[str, Any]) -> tuple[list[Counterparty], str]:

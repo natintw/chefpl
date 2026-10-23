@@ -201,9 +201,20 @@ class BankTxnIn(BaseModel):
     counterparty_account_no: str | None = Field(None, description="對方帳號，可遮蔽，至少保留末 5 碼")
 
 
+class BankTxnRef(BaseModel):
+    cash_txn_id: str = Field(min_length=1, max_length=200)
+
+
 class BankTxnWebhookIn(BaseModel):
-    event: Literal["bank_transactions.imported"] = "bank_transactions.imported"
-    items: list[BankTxnIn] = Field(min_length=1, max_length=1000)
+    """imported：新匯入的交易（要比對）；deleted：現金流系統刪掉的交易（撤回先前的比對結果）。"""
+    event: Literal["bank_transactions.imported", "bank_transactions.deleted"] = "bank_transactions.imported"
+    items: list[dict] = Field(min_length=1, max_length=1000)
+
+    def imported(self) -> list[BankTxnIn]:
+        return [BankTxnIn.model_validate(i) for i in self.items]
+
+    def deleted(self) -> list[BankTxnRef]:
+        return [BankTxnRef.model_validate(i) for i in self.items]
 
 
 class BankOnlyIn(BaseModel):

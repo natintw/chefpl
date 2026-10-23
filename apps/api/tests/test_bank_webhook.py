@@ -112,3 +112,53 @@ def test_public_mode_requires_valid_signature(client, svc_headers, monkeypatch):
                                                     "X-Signature": sign(old, body)}).status_code == 401  # 超過 5 分鐘
     ok = client.post(HOOK, content=body, headers={**base, "X-Timestamp": ts, "X-Signature": sign(ts, body)})
     assert ok.status_code == 200 and ok.json()["matched"] == 1
+
+
+def _delete(client, svc_headers, *ids):
+    r = client.post(HOOK, json={"event": "bank_transactions.deleted", "items": [{"cash_txn_id": i} for i in ids]},
+                    headers={**svc_headers, "Idempotency-Key": str(uuid.uuid4())})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_deleted_txn_reopens_documents_and_can_be_reimported(client, svc_headers):
+    """現金流匯錯刪掉：付款撤回、單據回到未付；重新匯入（金額改正）會重新比對。"""
+    a, b, c, o = _vendor_payables(client)
+    _send(client, svc_headers, _txn("T1", 36750, counterparty_name="協昌菓菜"))
+    res = _delete(client, svc_headers, "T1", "NOPE")
+    by = {r["cash_txn_id"]: r for r in res["results"]}
+    assert by["T1"]["status"] == "withdrawn" and set(by["T1"]["reopened_documents"]) == {a["id"], b["id"], c["id"]}
+    assert by["NOPE"]["status"] == "not_found"
+    for d in (a, b, c):
+        assert client.get(f"/api/v1/documents/{d['id']}").json()["settle_status"] == "open"
+    # 同一筆再匯一次：不是 duplicate，重新結清
+    again = _send(client, svc_headers, _txn("T1", 36750, counterparty_name="協昌菓菜"))
+    assert again["matched"] == 1
+    # 再刪一次也安全（冪等）
+    assert _delete(client, svc_headers, "T1")["withdrawn"] == 1
+    assert _delete(client, svc_headers, "T1")["not_found"] == 1
+
+
+def test_deleted_txn_withdraws_review_and_voids_bank_only_document(client, svc_headers):
+    _vendor_payables(client)
+    # 一筆進待確認、還沒處理 → 刪除時撤下
+    _send(client, svc_headers, _txn("R1", 99999, counterparty_name="協昌菓菜行"))
+    # 一筆進待確認、會計已建立已結清單據（例：手續費）→ 刪除時作廢
+    _send(client, svc_headers, _txn("F1", 30, bank_memo="手續費"))
+    items = {i["payload"]["item"]["cash_txn_id"]: i for i in
+             client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]}
+    r = client.post(f"/api/v1/review-items/{items['F1']['id']}/resolve",
+                    json={"action": "create_document", "payload": {"category_code": "E12", "counterparty_name": "臺灣銀行"}})
+    assert r.status_code == 200, r.text
+    fee_doc = r.json()["document_id"]
+
+    res = _delete(client, svc_headers, "R1", "F1")
+    by = {x["cash_txn_id"]: x for x in res["results"]}
+    assert by["R1"]["dismissed_reviews"] == 1
+    assert by["F1"]["voided_documents"] == [fee_doc]
+    assert client.get(f"/api/v1/documents/{fee_doc}").json()["status"] == "void"
+    left = [i for i in client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]]
+    assert not left
+    # 重新匯入：又進待確認（不是 duplicate）
+    again = _send(client, svc_headers, _txn("F1", 30, bank_memo="手續費"))
+    assert again["review"] == 1, again

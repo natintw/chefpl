@@ -12,6 +12,9 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError as PydanticValidationError
+
 from app.db import get_ledger_session
 from app.entry.deps import current_service
 from app.entry.schemas import BankOnlyIn, BankTxnWebhookIn, SettlementsIn
@@ -72,9 +75,16 @@ async def bank_transactions_webhook(request: Request, body: BankTxnWebhookIn, id
     """現金流系統匯入銀行簿子後呼叫。帳務系統自己比對未付應付（可一筆匯款對多家門市的單據），
     對不到的進「待確認」。同一個 cash_txn_id 重送會略過。"""
     raw = await request.body()
-    items = [i.model_dump(mode="json") for i in body.items]
-    return _idempotent(s, svc, idempotency_key, "webhooks/bank-transactions", raw,
-                       lambda: BankMatchService(s).receive(items, svc.actor))
+    try:
+        if body.event == "bank_transactions.deleted":
+            ids = [i.cash_txn_id for i in body.deleted()]
+            handler = lambda: BankMatchService(s).withdraw(ids, svc.actor)  # noqa: E731
+        else:
+            items = [i.model_dump(mode="json") for i in body.imported()]
+            handler = lambda: BankMatchService(s).receive(items, svc.actor)  # noqa: E731
+    except PydanticValidationError as e:
+        raise RequestValidationError(e.errors()) from e
+    return _idempotent(s, svc, idempotency_key, "webhooks/bank-transactions", raw, handler)
 
 
 @router.post("/bank-only-items")

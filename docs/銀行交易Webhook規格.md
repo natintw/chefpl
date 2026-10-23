@@ -1,6 +1,6 @@
 # 銀行交易 Webhook 規格（ChefCashFlow → 帳務損益系統）
 
-版本 1.0・2026-10-23
+版本 1.1・2026-10-23（新增 §6 刪除交易）
 
 ## 1. 這是做什麼的
 
@@ -17,6 +17,8 @@ ChefCashFlow **不需要**知道帳務系統有哪些單據，也不需要寫比
 每次匯入銀行簿子完成後，把這次匯入的交易送一次（支出、收入都送）。一次最多 1,000 筆，多的分批送。
 
 重送是安全的：同一個 `cash_txn_id` 已經處理過的會回 `duplicate`，不會重複標已付。
+
+已經送過的交易在 ChefCashFlow 被刪掉（匯錯要重匯）或改成內部轉帳時，送 `bank_transactions.deleted`（第 6 節）。
 
 ## 3. 請求
 
@@ -150,7 +152,43 @@ HTTP 狀態：
 | 422 | 欄位格式錯誤（回應 `details` 列出哪一欄） |
 | 5xx／逾時 | 用**同一個** Idempotency-Key 重試（建議 1、5、30 分鐘後各一次） |
 
-## 6. 設定
+## 6. 刪除交易（bank_transactions.deleted）
+
+匯入錯誤要刪掉重匯時，帳務系統裡由那筆交易造成的結果要撤回。同一個端點、同一套金鑰與簽章（`INTEGRATION_CLIENTS` 不用改），只是 `event` 不同、`items` 只帶 ID：
+
+```json
+{ "event": "bank_transactions.deleted", "items": [ { "cash_txn_id": "cf-0f9fa362…" } ] }
+```
+
+帳務系統對每一筆：
+
+| 情況 | 處理 |
+| --- | --- |
+| 這筆交易結清了某些應付／應收 | 付款配對取消，單據回到「未付」 |
+| 會計在待確認按了「建立已結清單據」（例：手續費） | 那張單據作廢；如果所在月份已關帳，不動帳，改開一筆待確認請會計決定 |
+| 還在待確認、沒處理 | 撤下 |
+
+**損益不受影響**：損益依單據的發生月份認列，付了沒只影響「已付／未付」和應付餘額。唯一會動到損益的是上表第二種（由銀行交易直接建立的費用單據），所以才作廢。
+
+回應：
+
+```json
+{ "withdrawn": 1, "not_found": 0, "needs_review": 0,
+  "results": [ { "cash_txn_id": "cf-…", "status": "withdrawn", "reopened_documents": ["…"],
+                 "voided_documents": [], "dismissed_reviews": 0, "flagged_documents": [] } ] }
+```
+
+| status | 意思 |
+| --- | --- |
+| `withdrawn` | 已撤回 |
+| `not_found` | 帳務系統沒有這筆的紀錄（沒送過、或已撤回過）；重送是安全的 |
+| `needs_review` | 有單據在已關帳月份，已開待確認 |
+
+撤回後，同一個 `cash_txn_id` 重新匯入會當成新的交易重新比對（不會回 `duplicate`）。所以 **ChefCashFlow 必須先送 deleted、成功後才送重新匯入的那筆**；順序反了，新的那筆會被當成重複，接著又被撤回。
+
+ChefCashFlow 的做法：`cash_transactions` 上有資料庫觸發器，任何刪除（清除交易、重設、刪帳戶／刪公司連帶刪除）或改成內部轉帳，都把已送過的 ID 記進 `ledger_outbox`；每次送新交易前先清空這個佇列，帳務系統連不上時每分鐘自動重試，重匯的同一筆會先擋住、標 `error`，撤回成功後由「補送」送出。
+
+## 7. 設定
 
 先產生兩組亂碼（各一次，兩邊用同一組）：
 
@@ -181,9 +219,9 @@ LEDGER_API_KEY=<API 金鑰>
 LEDGER_SIGNING_SECRET=<簽章密鑰>
 ```
 
-## 7. 注意事項
+## 8. 注意事項
 
 - 銀行帳戶主檔：帳務系統用 `cash_account_id` 判斷公司，所以 ChefCashFlow 的每個帳戶都要在帳務系統的帳戶主檔裡（目前博仁餐飲、博竑漢神分公司還沒有帳戶）。
 - 比對只用「到期日在交易日 20 天內」的未付單據，避免把很久以後才到期的單據提早結清。
 - 金額必須剛好相符才自動結清；手續費另扣、少付或多付都會進待確認。
-- 自動結清錯了：在 ChefCashFlow 取消配對後，呼叫既有的 `POST /integration/v1/settlements`（`action: "reverse"`）取消（`INTEGRATION_CLIENTS` 的 `allow` 要加上 `"POST /integration/v1/settlements"`，簽章方式相同），或請會計在帳務系統處理。
+- 交易本身沒錯、只是自動結清到錯的單據：在 ChefCashFlow 取消配對後，呼叫既有的 `POST /integration/v1/settlements`（`action: "reverse"`）取消（`INTEGRATION_CLIENTS` 的 `allow` 要加上 `"POST /integration/v1/settlements"`，簽章方式相同），或請會計在帳務系統處理。
