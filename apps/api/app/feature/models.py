@@ -52,6 +52,19 @@ class CategoryAccountMap(Base):
     account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey(f"{SCHEMA}.accounts.id"))
 
 
+class CashCategoryMap(Base):
+    """現金流分類 → 損益類別（待確認的預設類別與損益月份）。"""
+    __tablename__ = "cash_category_map"
+    __table_args__ = {"schema": SCHEMA}
+    cash_code: Mapped[str] = mapped_column(Text, primary_key=True)
+    cash_name: Mapped[str] = mapped_column(Text)
+    ledger_category_code: Mapped[str | None] = mapped_column(ForeignKey(f"{SCHEMA}.mgmt_categories.code"))
+    period_mode: Mapped[str] = mapped_column(Text, default="same")
+    note: Mapped[str | None] = mapped_column(Text)
+    updated_by: Mapped[str] = mapped_column(Text, default="seed")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Counterparty(Base):
     __tablename__ = "counterparties"
     __table_args__ = {"schema": SCHEMA}

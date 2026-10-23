@@ -6,6 +6,7 @@
  */
 import { useMemo, useRef, useState } from "react";
 import { PageHeader } from "@/components/Shell";
+import { CashCategoryMap } from "@/components/CashCategoryMap";
 import { useDirectory } from "@/components/directory";
 import { Empty, ErrorBox, FieldErrors, Skeleton, Tag, useToast } from "@/components/ui";
 import { ApiError, apiDownload, apiSend, apiUpload, useApi } from "@/lib/api";
@@ -145,6 +146,8 @@ export default function VendorsPage() {
           </details>
         </div>
       </section>
+
+      <CashCategoryMap />
     </>
   );
 }

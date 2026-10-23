@@ -83,12 +83,12 @@ function Card({ it, onDone, embedded }: { it: ReviewItem; onDone: () => void; em
   const [err, setErr] = useState<ApiError | null>(null);
   const p = it.payload;
   const bank = p.item as Record<string, any> | undefined;
-  const [cat, setCat] = useState<string>(bank?.suggested_category_code || p.suggestion?.category_code || "");
+  const [cat, setCat] = useState<string>(it.suggested_category_code || bank?.suggested_category_code || p.suggestion?.category_code || "");
   const [cpName, setCpName] = useState<string>(bank?.counterparty_name || "");
   const [remember, setRemember] = useState(true);
   const [manual, setManual] = useState(false);
   const txnMonth = String(bank?.txn_date || "").slice(0, 7);
-  const [pMode, setPMode] = useState<"same" | "prev" | "fixed">(bank?.cash_category_code === "EXP_SAL" || bank?.cash_category_code === "EXP_SOC" ? "prev" : "same");
+  const [pMode, setPMode] = useState<"same" | "prev" | "fixed">(it.suggested_period_mode === "prev" ? "prev" : "same");
   const [pMonth, setPMonth] = useState("");
   const periodKey = pMode === "prev" ? addMonth(txnMonth, -1) : pMode === "fixed" ? pMonth : txnMonth;
 
@@ -124,6 +124,9 @@ function Card({ it, onDone, embedded }: { it: ReviewItem; onDone: () => void; em
         </div>
       )}
       {it.kind === "bank_only" && p.reason && <p className="small" style={{ margin: 0 }}>系統比對結果：{p.reason}</p>}
+      {it.kind === "bank_only" && it.suggestion_source && (
+        <p className="small" style={{ margin: 0 }}>預設類別依{it.suggestion_source}：{it.suggested_category_code} {categoryName(it.suggested_category_code || "")}
+          {it.suggested_period_mode === "prev" ? "，損益記上個月" : ""}（可以改）</p>)}
       {it.kind === "bank_only" && p.suggestion?.documents?.length > 0 && (
         <div className="ai">
           <div style={{ fontWeight: 600 }}>可能是：{p.suggestion.counterparty_name || "以下單據"}，{p.suggestion.documents.length} 張未付合計

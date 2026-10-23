@@ -31,7 +31,7 @@ from sqlalchemy import text  # noqa: E402
 from app.db import engine, session_scope  # noqa: E402
 from app.seams import invoice_feed  # noqa: E402
 
-KEEP = {"mgmt_categories", "classification_rules", "alembic_version"}
+KEEP = {"mgmt_categories", "classification_rules", "alembic_version", "cash_category_map"}
 MS = "comp-1790263124662"          # 名勝食品
 WH = "comp-1790322196308"          # 名勝文衡分公司
 WH_STORE = "store-msw-01"
@@ -59,6 +59,7 @@ def _clean():
         c.execute(text(f"TRUNCATE {', '.join(tables)} CASCADE"))
         c.execute(text("DELETE FROM ledger.classification_rules WHERE created_by <> 'seed'"))
         c.execute(text("DELETE FROM ledger.counterparties"))
+        c.execute(text("DELETE FROM ledger.cash_category_map WHERE updated_by <> 'seed'"))
     invoice_feed.set_invoice_feed(invoice_feed.MockInvoiceFeed())
     yield
 

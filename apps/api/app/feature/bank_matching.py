@@ -73,6 +73,8 @@ class BankMatchService:
                          if set(cp.roles or []) - {"payee"}]
         results, counts = [], {"matched": 0, "review": 0, "duplicate": 0, "rejected": 0, "skipped": 0}
         bad_accounts = upsert_from_items(self.s, items)  # 帳戶資料以現金流系統為準
+        from app.feature.cash_category_map import CashCategoryMapService
+        CashCategoryMapService(self.s).register(items)  # 現金流新分類加進對照表
         for it in items:
             if it["cash_account_id"] in bad_accounts:
                 r = {"cash_txn_id": it["cash_txn_id"], "status": "rejected", "message": bad_accounts[it["cash_account_id"]]}

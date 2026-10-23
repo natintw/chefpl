@@ -413,10 +413,21 @@ def review_items(kind: str | None = None, company_id: str | None = None, period:
     # 銀行交易：對方戶名先前選過門市的，帶出建議門市（例：員工屬於哪家店）
     names = {(i.payload or {}).get("item", {}).get("counterparty_name") for i in items if i.kind == "bank_only"} - {None, ""}
     stores = {cp.name: cp.default_store_id for cp in CatalogRepository(s).counterparties_by_names(names)} if names else {}
+    # 損益類別預判：廠商類別 ＞ 現金流分類對照表（見 cash_category_map）
+    from app.feature.cash_category_map import CashCategoryMapService
+    banks = [i for i in items if i.kind == "bank_only"]
+    sugg = dict(zip([i.id for i in banks], CashCategoryMapService(s).suggest(
+        [((i.payload or {}).get("item", {}).get("cash_category_code"), (i.payload or {}).get("counterparty_hint"))
+         for i in banks])))
+
     def extra(i):
         if i.kind != "bank_only":
             return {}
-        return {"suggested_store_id": stores.get((i.payload or {}).get("item", {}).get("counterparty_name"))}
+        g = sugg.get(i.id)
+        return {"suggested_store_id": stores.get((i.payload or {}).get("item", {}).get("counterparty_name")),
+                "suggested_category_code": g["category_code"] if g else None,
+                "suggested_period_mode": g["period_mode"] if g else None,
+                "suggestion_source": g["source_label"] if g else None}
     return {"items": [{"id": str(i.id), "kind": i.kind, "company_id": i.company_id, "period": i.period_key,
                        "ref": i.ref, "payload": i.payload, "created_at": i.created_at.isoformat(), **extra(i)} for i in items]}
 
@@ -500,6 +511,26 @@ def patch_counterparty(cp_id: uuid.UUID, body: CounterpartyPatch, user: UserPrin
 
 
 # ---------------------------------------------------------------- 廠商類別對應表
+@router.get("/settings/cash-category-map")
+def cash_category_map(user: UserPrincipal = Depends(need("doc.view")), s: Session = Depends(get_ledger_session, scope="function")):
+    """現金流分類 → 損益類別對照表；open_reviews 是目前待確認裡這個分類的筆數。"""
+    from app.feature.cash_category_map import CashCategoryMapService
+    counts: dict[str, int] = {}
+    for i in OpsRepository(s).list_reviews(company_ids=_cids(user), kind="bank_only", period=None):
+        code = (i.payload or {}).get("item", {}).get("cash_category_code") or "UNCAT"
+        counts[code] = counts.get(code, 0) + 1
+    return {"items": CashCategoryMapService(s).list(counts)}
+
+
+@router.patch("/settings/cash-category-map/{cash_code}")
+def set_cash_category_map(cash_code: str, ledger_category_code: str | None = Body(None, embed=True),
+                          period_mode: str | None = Body(None, embed=True),
+                          user: UserPrincipal = Depends(need("settings.manage")),
+                          s: Session = Depends(get_ledger_session, scope="function")):
+    from app.feature.cash_category_map import CashCategoryMapService
+    return CashCategoryMapService(s).update(cash_code, ledger_category_code, period_mode, user.actor)
+
+
 @router.get("/settings/vendor-map")
 def vendor_map(q: str | None = None, only_unmapped: bool = False, user: UserPrincipal = Depends(need("doc.view")),
                s: Session = Depends(get_ledger_session, scope="function")):

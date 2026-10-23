@@ -14,14 +14,6 @@ import { apiSend } from "@/lib/api";
 import { money } from "@/lib/format";
 import type { ReviewItem } from "@/lib/types";
 
-/** 現金流分類 → 建議的損益類別與月份（薪資、勞健保多半是付上個月的） */
-const SUGGEST: Record<string, { cat: string; mode: "same" | "prev" }> = {
-  EXP_SAL: { cat: "P01", mode: "prev" },
-  EXP_SOC: { cat: "P03", mode: "prev" },
-  EXP_UTI: { cat: "O02", mode: "same" },
-  EXP_LEA: { cat: "O01", mode: "same" },
-  REV_INT: { cat: "N03", mode: "same" },
-};
 
 const monthOf = (it: ReviewItem) => String(it.payload.item?.txn_date || "").slice(0, 7);
 const catOf = (it: ReviewItem) => it.payload.item?.cash_category_name || "（現金流未分類）";
@@ -30,7 +22,7 @@ export function BankReviewTable({ items, onDone, renderDetail }: {
   items: ReviewItem[]; onDone: (ids: string[]) => void; renderDetail: (it: ReviewItem) => ReactNode;
 }) {
   const toast = useToast();
-  const { dir, companyName, categories } = useDirectory();
+  const { dir, companyName, categories, categoryName } = useDirectory();
   const [company, setCompany] = useState("");
   const [direction, setDirection] = useState("");
   const [cat, setCat] = useState("");
@@ -90,9 +82,10 @@ export function BankReviewTable({ items, onDone, renderDetail }: {
     return n;
   });
 
-  // 批次設定：依勾選的現金流分類帶建議
-  const codes = [...new Set(sel.map((it) => it.payload.item?.cash_category_code).filter(Boolean))];
-  const sug = codes.length === 1 ? SUGGEST[codes[0] as string] : undefined;
+  // 批次設定：勾選的每一筆預判類別都一樣時帶入（帳務系統依「現金流分類對照」與廠商類別算好）
+  const sugKeys = [...new Set(sel.map((it) => `${it.suggested_category_code || ""}|${it.suggested_period_mode || "same"}`))];
+  const sug = sugKeys.length === 1 && sugKeys[0].split("|")[0]
+    ? { cat: sugKeys[0].split("|")[0], mode: sugKeys[0].split("|")[1] as "same" | "prev" } : undefined;
   const [bCat, setBCat] = useState("");
   const [bMode, setBMode] = useState<"same" | "prev" | "fixed">("same");
   const [bMonth, setBMonth] = useState("");
@@ -217,7 +210,7 @@ export function BankReviewTable({ items, onDone, renderDetail }: {
             {selRoots.size > 1 && <span className="small">勾選的跨不同公司，門市請逐列選</span>}
           </div>
           {mixedDir && <div className="small neg">支出與收入要分開建立單據（類別不同），請用上方「方向」篩選。</div>}
-          {sug && !bCat && <div className="small">依現金流分類建議：{sug.cat}、{sug.mode === "prev" ? "上個月" : "交易當月"}，可以改。</div>}
+          {sug && !bCat && <div className="small">依現金流分類預判：{sug.cat}、{sug.mode === "prev" ? "上個月" : "交易當月"}，可以改。</div>}
           <div className="small">對象沿用每筆的對方戶名；門市照每列「門市」欄（沒選＝公司層級），選過的人下次自動帶出。</div>
         </div>
       )}
@@ -244,7 +237,8 @@ export function BankReviewTable({ items, onDone, renderDetail }: {
                     <td className="small">{b.bank_memo}<div className="sub">{[b.bank_note, b.counterparty_name].filter((x, i, a) => x && a.indexOf(x) === i).join("・")}</div></td>
                     <td className="num r">{b.direction === "out" ? money(b.amount) : ""}</td>
                     <td className="num r">{b.direction === "in" ? money(b.amount) : ""}</td>
-                    <td className="small">{catOf(it)}</td>
+                    <td className="small">{catOf(it)}
+                      {it.suggested_category_code && <div title={`預判依${it.suggestion_source || ""}`}>→ {it.suggested_category_code} {categoryName(it.suggested_category_code)}{it.suggested_period_mode === "prev" ? "・上月" : ""}</div>}</td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <select aria-label="門市" value={storeFor(it)} style={{ minHeight: 32, fontSize: 13, maxWidth: 140 }}
                               onChange={(e) => setStoreOf((m) => ({ ...m, [it.id]: e.target.value }))}>
