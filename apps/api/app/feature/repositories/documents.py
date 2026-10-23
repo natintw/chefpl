@@ -58,7 +58,7 @@ class DocumentRepository:
         if company_ids is not None:
             conds.append(Document.company_id.in_(company_ids))
         if doc_type:
-            conds.append(Document.doc_type == doc_type)
+            conds.append(Document.doc_type.in_(doc_type.split(",")))
         if settle_status:
             conds.append(Document.settle_status.in_(settle_status.split(",")))
         if source_kind:

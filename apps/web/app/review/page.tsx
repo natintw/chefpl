@@ -7,6 +7,7 @@ import { useDirectory } from "@/components/directory";
 import { Empty, ErrorBox, FieldErrors, Skeleton, Tag, useToast } from "@/components/ui";
 import { ApiError, apiSend, useApi } from "@/lib/api";
 import { money, REVIEW_LABEL } from "@/lib/format";
+import { ManualMatch } from "@/components/ManualMatch";
 import type { ReviewItem } from "@/lib/types";
 import Link from "next/link";
 
@@ -73,6 +74,7 @@ function Card({ it, onDone }: { it: ReviewItem; onDone: () => void }) {
   const [cat, setCat] = useState<string>(bank?.suggested_category_code || p.suggestion?.category_code || "");
   const [cpName, setCpName] = useState<string>(bank?.counterparty_name || "");
   const [remember, setRemember] = useState(true);
+  const [manual, setManual] = useState(false);
 
   async function resolve(action: string, payload: Record<string, unknown> = {}, msg = "已處理") {
     setBusy(true); setErr(null);
@@ -157,8 +159,16 @@ function Card({ it, onDone }: { it: ReviewItem; onDone: () => void }) {
         </>}
         {!["bank_only", "unclassified", "amount_only_match", "duplicate_source", "new_counterparty"].includes(it.kind) &&
           <button className="btn pri" disabled={busy} onClick={() => resolve("acknowledge", {}, "已確認")}>確認</button>}
+        {it.kind === "bank_only" && bank?.company_id &&
+          <button className="btn" disabled={busy} aria-expanded={manual} onClick={() => setManual(!manual)}>
+            {manual ? "收起手動核對" : "手動核對（金額有差、帳號不對）"}</button>}
         <button className="btn" disabled={busy} onClick={() => resolve("dismiss", {}, "已略過")}>略過</button>
       </div>
+      {it.kind === "bank_only" && manual && bank?.company_id && (
+        <ManualMatch reviewId={it.id} bank={bank as never}
+                     preselect={(p.suggestion?.documents || []).map((d: { document_id: string }) => d.document_id)}
+                     onDone={(msg) => { toast(msg); onDone(); }} />
+      )}
     </article>
   );
 }

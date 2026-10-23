@@ -1,0 +1,105 @@
+"""待確認的銀行交易手動核對：金額有些許差距、對方帳號更正。"""
+import uuid
+
+from tests.helpers import payable
+from tests.test_bank_webhook import HOOK, _send, _txn
+
+
+def _review_for(client, txn):
+    items = client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]
+    return next(i for i in items if i["payload"]["item"]["cash_txn_id"] == txn)
+
+
+def _match(client, txn, ids, **kw):
+    it = _review_for(client, txn)
+    return client.post(f"/api/v1/review-items/{it['id']}/resolve",
+                       json={"action": "manual_match", "payload": {"document_ids": ids, **kw}})
+
+
+def _doc(client, d):
+    return client.get(f"/api/v1/documents/{d['id']}").json()
+
+
+def _pl_total(client, code, company="comp-1"):
+    d = client.get("/api/v1/pl/statement", params={"period_from": "2026-09", "period_to": "2026-09",
+                                                   "company_id": company, "columns": "month"}).json()
+    return d
+
+
+def test_overpaid_with_bank_fee(client, svc_headers):
+    """多付 30（匯費內含）：單據結清，30 記銀行手續費。"""
+    a = payable(client, company="comp-1", store="store-bh-factory", amount=10500, vendor="元華行", invoice_no="MM00000001")
+    _send(client, svc_headers, _txn("M1", 10530, counterparty_name="某某", txn_date="2026-09-30"))
+    r = _match(client, "M1", [a["id"]], difference_mode="book")
+    assert r.status_code == 200, r.text
+    res = r.json()
+    assert res["difference"] == 30 and res["difference_document"]
+    assert _doc(client, a)["settle_status"] == "settled"
+    fee = client.get(f"/api/v1/documents/{res['difference_document']}").json()
+    assert fee["lines"][0]["category_code"] == "E12" and fee["settle_status"] == "settled"
+
+
+def test_underpaid_left_open_then_written_off(client, svc_headers):
+    a = payable(client, company="comp-1", store="store-bh-factory", amount=10500, vendor="元華行", invoice_no="MM00000002")
+    b = payable(client, company="comp-1790263075210", store="store-bhk-dale", amount=5250, vendor="元華行", invoice_no="MM00000003")
+    # 少付 750，留著未付
+    _send(client, svc_headers, _txn("M2", 15000, counterparty_name="某某", txn_date="2026-09-30"))
+    r = _match(client, "M2", [a["id"], b["id"]], difference_mode="leave_open")
+    assert r.status_code == 200, r.text
+    assert _doc(client, a)["settle_status"] == "settled"
+    assert _doc(client, b)["settle_status"] == "partial" and _doc(client, b)["outstanding"] == 750
+
+
+def test_underpaid_written_off_as_discount(client, svc_headers):
+    a = payable(client, company="comp-1", store="store-bh-factory", amount=10500, vendor="元華行", invoice_no="MM00000004")
+    b = payable(client, company="comp-1", store="store-bh-factory", amount=5250, vendor="元華行", invoice_no="MM00000005")
+    _send(client, svc_headers, _txn("M3", 15700, counterparty_name="某某", txn_date="2026-09-30"))  # 抹零 50
+    r = _match(client, "M3", [a["id"], b["id"]], difference_mode="book")
+    assert r.status_code == 200, r.text
+    assert _doc(client, a)["settle_status"] == "settled" and _doc(client, b)["settle_status"] == "settled"
+    adj = client.get(f"/api/v1/documents/{r.json()['difference_document']}").json()
+    assert adj["lines"][0]["category_code"] == "N03" and adj["settle_amount"] == 50
+    # 銀行那筆只分出 15,700
+    st = [s for s in _doc(client, a)["settlements"] + _doc(client, b)["settlements"] if s["cash_txn_id"] == "M3"]
+    assert sum(s["amount"] for s in st) == 15700
+    # 現金流刪掉這筆：兩張單據回未付，差額單據作廢
+    rr = client.post(HOOK, json={"event": "bank_transactions.deleted", "items": [{"cash_txn_id": "M3"}]},
+                     headers={**svc_headers, "Idempotency-Key": str(uuid.uuid4())})
+    assert rr.status_code == 200, rr.text
+    assert _doc(client, a)["settle_status"] == "open" and _doc(client, b)["settle_status"] == "open"
+    assert client.get(f"/api/v1/documents/{r.json()['difference_document']}").json()["status"] == "void"
+
+
+def test_receipt_short_by_card_fee(client, svc_headers):
+    r = client.post("/api/v1/documents", json={
+        "doc_type": "receivable", "company_id": "comp-1", "doc_date": "2026-09-30", "counterparty_name": "家福",
+        "settle_amount": 52500, "tax_amount": 2500,
+        "lines": [{"period_key": "2026-09", "category_code": "R04", "amount": 50000, "store_id": "store-bh-factory"}]})
+    _send(client, svc_headers, _txn("M4", 51975, direction="in", txn_date="2026-10-02"))   # 被扣 525
+    res = _match(client, "M4", [r.json()["id"]], difference_mode="book")
+    assert res.status_code == 200, res.text
+    assert client.get(f"/api/v1/documents/{r.json()['id']}").json()["settle_status"] == "settled"
+    fee = client.get(f"/api/v1/documents/{res.json()['difference_document']}").json()
+    assert fee["doc_type"] == "payable" and fee["lines"][0]["category_code"] == "E11"
+
+
+def test_wrong_account_is_corrected(client, svc_headers):
+    """對方帳號原本被記在錯的廠商身上：手動核對後改記到正確廠商，下次自動對上。"""
+    a = payable(client, company="comp-1", store="store-bh-factory", amount=10500, vendor="元華行", invoice_no="MM00000006")
+    wrong = payable(client, company="comp-1", store="store-bh-factory", amount=3150, vendor="協昌菓菜行", invoice_no="MM00000007")
+    _send(client, svc_headers, _txn("W0", 3150, counterparty_name="協昌菓菜行", counterparty_account_no="0123-77777",
+                                    txn_date="2026-09-30"))  # 系統記住：77777＝協昌（其實記錯）
+    _send(client, svc_headers, _txn("W1", 10500, counterparty_account_no="0123-77777", bank_memo="ATM轉帳",
+                                    txn_date="2026-09-30"))  # 用帳號認成協昌，但協昌已付清 → 待確認
+    r = _match(client, "W1", [a["id"]])
+    assert r.status_code == 200 and "元華行" in r.json()["remembered_account"]
+    b = payable(client, company="comp-1", store="store-bh-factory", amount=2100, vendor="元華行", invoice_no="MM00000008")
+    res = _send(client, svc_headers, _txn("W2", 2100, counterparty_account_no="***77777", bank_memo="ATM轉帳",
+                                          txn_date="2026-09-30"))
+    assert res["matched"] == 1 and res["results"][0]["counterparty"].startswith("元華")
+
+
+def test_overpaid_requires_category_mode(client, svc_headers):
+    a = payable(client, company="comp-1", store="store-bh-factory", amount=1050, vendor="元華行", invoice_no="MM00000009")
+    _send(client, svc_headers, _txn("M5", 2000, counterparty_name="某某", txn_date="2026-09-30"))
+    assert _match(client, "M5", [a["id"]], difference_mode="leave_open").status_code == 422

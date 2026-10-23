@@ -30,6 +30,9 @@ class ReviewService:
             item.status = "dismissed"
         elif item.kind == "bank_only" and action == "create_document":
             result["document_id"] = str(self._bank_only_document(item.payload["item"], payload, actor).id)
+        elif item.kind == "bank_only" and action == "manual_match":
+            from app.feature.manual_match import ManualMatchService
+            result.update(ManualMatchService(self.s).match(item.payload["item"], payload, actor))
         elif item.kind == "bank_only" and action == "settle_suggestion":
             # webhook 對不到時附上的建議單據：會計確認後，整組標成已付／已收
             it = item.payload["item"]

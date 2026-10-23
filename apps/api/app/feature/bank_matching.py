@@ -183,7 +183,7 @@ class BankMatchService:
         for txn in dict.fromkeys(txn_ids):  # 去重、保留順序
             touched, voided, dismissed, flagged = [], [], 0, []
             # 1) 付款配對取消 → 單據回到未付（不影響損益：損益依發生月份，不看付了沒）
-            for st in self.s.scalars(select(Settlement).where(Settlement.cash_txn_id == txn,
+            for st in self.s.scalars(select(Settlement).where(Settlement.cash_txn_id.in_((txn, f"adj:{txn}")),
                                                               Settlement.reversed_at.is_(None))):
                 st.reversed_at = now
                 touched.append(st.document_id)
@@ -194,7 +194,8 @@ class BankMatchService:
                 self.settle.posting.recompute_settlement(doc)
             # 2) 由這筆交易建立的單據（待確認裡「建立已結清單據」，例如手續費）→ 作廢；已關帳的月份改開待確認
             for doc in self.s.scalars(select(Document).where(Document.source_kind == "bank_only",
-                                                             Document.source_ref == txn, Document.status != "void")):
+                                                             Document.source_ref.in_((txn, f"adj:{txn}")),
+                                                             Document.status != "void")):
                 closed = [p for p in {l.period_key for l in doc.lines} if self.ops.is_closed(doc.company_id, p)]
                 if closed:
                     self.ops.open_review("import_warning", doc.company_id, f"document:{doc.id}",
