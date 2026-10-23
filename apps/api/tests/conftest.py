@@ -34,7 +34,7 @@ from app.seams import invoice_feed  # noqa: E402
 KEEP = {"mgmt_categories", "classification_rules", "alembic_version"}
 MS = "comp-1790263124662"          # 名勝食品
 WH = "comp-1790322196308"          # 名勝文衡分公司
-WH_STORE = "store-ms-wenheng"
+WH_STORE = "store-msw-01"
 ACC_3578 = "acc-1790323488187"     # 名勝3578貨款用
 
 

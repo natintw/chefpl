@@ -5,7 +5,7 @@ import io
 from openpyxl import Workbook
 
 
-def payable(client, *, company="comp-1790322196308", store="store-ms-wenheng", period="2026-08", amount=10500,
+def payable(client, *, company="comp-1790322196308", store="store-msw-01", period="2026-08", amount=10500,
             category="C01", vendor="協昌果菜行", invoice_no=None, has_invoice=True, method="pending", memo=None,
             doc_date=None, lines=None):
     net = round(amount / 1.05) if has_invoice else amount

@@ -24,7 +24,7 @@ y, m = map(int, CUR.split("-"))
 PREV = f"{y if m > 1 else y - 1}-{(m - 1 or 12):02d}"
 
 MS, MSH, CT, BH = "comp-1790322196308", "comp-1790263124662", "comp-1790263102815", "comp-1"
-COMP = {"store-ms-wenheng": MS, "store-ms-main": MSH}
+COMP = {"store-msw-01": MS, "store-ms-01": MSH}
 c = httpx.Client(base_url=API, headers=H, timeout=30)
 
 
@@ -47,14 +47,14 @@ def doc(company, period, lines, *, vendor=None, doc_type="payable", amount=None,
 def month(period: str, scale: float = 1.0, *, with_payroll=True):
     s = lambda n: int(n * scale)  # noqa: E731
     # 營收（應收：POS 日結示意）
-    for st, base in (("store-ms-wenheng", 1_380_000), ("store-ms-main", 960_000)):
+    for st, base in (("store-msw-01", 1_380_000), ("store-ms-01", 960_000)):
         doc(COMP[st], period, [("R01", s(base * .62), st), ("R02", s(base * .18), st), ("R03", s(base * .2), st)],
             vendor="POS 日結", doc_type="receivable", invoice=False, method="bank_paid", memo="POS 月結")
     for st, base in (("store-ct-01", 820_000),):
         doc(CT, period, [("R01", s(base * .7), st), ("R03", s(base * .3), st)], vendor="POS 日結",
             doc_type="receivable", invoice=False, method="bank_paid", memo="POS 月結")
     # 進貨
-    for comp, st, k in ((MS, "store-ms-wenheng", 1.0), (MSH, "store-ms-main", .7), (CT, "store-ct-01", .6)):
+    for comp, st, k in ((MS, "store-msw-01", 1.0), (MSH, "store-ms-01", .7), (CT, "store-ct-01", .6)):
         doc(comp, period, [("C01", s(118_000 * k), st)], vendor="協昌果菜行", due=f"{period}-28")
         doc(comp, period, [("C02", s(196_000 * k), st)], vendor="豬肉黃", due=f"{period}-28")
         doc(comp, period, [("C03", s(64_000 * k), st)], vendor="元華行")
@@ -64,7 +64,7 @@ def month(period: str, scale: float = 1.0, *, with_payroll=True):
     doc(MS, period, [("E09", s(36_000), None)], vendor="富霖印刷", memo="菜單與 DM")
     doc(CT, period, [("E06", s(12_400), "store-ct-01")], vendor="大同文具行", invoice=False, method="petty_cash", memo="零用金")
     if with_payroll:
-        for comp, st, base in ((MS, "store-ms-wenheng", 312_000), (MSH, "store-ms-main", 228_000),
+        for comp, st, base in ((MS, "store-msw-01", 312_000), (MSH, "store-ms-01", 228_000),
                                (CT, "store-ct-01", 205_000)):
             doc(comp, period, [("P01", s(base), st), ("P03", s(base * .11), st), ("P04", s(base * .06), st)],
                 vendor="薪資", invoice=False, method="bank_paid", memo=f"{period} 薪資")
@@ -89,7 +89,7 @@ else:
 # 預收（年菜訂金）與資本支出（B01，不入損益）
 doc(BH, CUR, [], vendor="年菜預購", doc_type="advance_receipt", invoice=False, amount=380_000,
     expected_delivery_date=f"{y + 1}-01-20", memo="年菜訂金")
-doc(MS, CUR, [("B01", 450_000, "store-ms-wenheng")], vendor="冷凍設備行", memo="冷凍櫃", asset_life_months=60)
+doc(MS, CUR, [("B01", 450_000, "store-msw-01")], vendor="冷凍設備行", memo="冷凍櫃", asset_life_months=60)
 # 預估入帳：水電還沒來單
 doc(CT, CUR, [("O02", 30_000, "store-ct-01")], vendor="台灣電力公司", doc_type="accrual", invoice=False,
     accrual_mode="estimate_reverse", memo="電費預估")

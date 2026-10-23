@@ -76,7 +76,8 @@ class PostingService:
 
         intercompany = bool(cp and cp.is_intercompany)
         for i, ln in enumerate(inp.lines, start=1):
-            doc.lines.append(DocumentLine(line_no=i, company_id=inp.company_id, store_id=ln.store_id,
+            doc.lines.append(DocumentLine(line_no=i, company_id=self._line_company(inp.company_id, ln.store_id),
+                                          store_id=ln.store_id,
                                           period_key=ln.period_key, category_code=ln.category_code,
                                           amount=ln.amount, description=ln.description,
                                           is_intercompany=intercompany and ln.category_code in ("C99", "R06")))
@@ -166,7 +167,7 @@ class PostingService:
 
         if not inp.allow_closed_period and inp.source_kind not in SYSTEM_SOURCES:
             for ln in inp.lines:
-                if self.ops.is_closed(inp.company_id, ln.period_key):
+                if self.ops.is_closed(self._line_company(inp.company_id, ln.store_id), ln.period_key):
                     raise PeriodClosed(f"{ln.period_key} 已關帳。要記到 {add_months(ln.period_key, 1)}，"
                                        f"或請管理者重開 {ln.period_key}？", [{"field": "period_key",
                                                                               "message": ln.period_key}])
@@ -266,7 +267,8 @@ class PostingService:
             doc.lines.clear()
             self.s.flush()
             for i, ln in enumerate(new_lines, start=1):
-                doc.lines.append(DocumentLine(line_no=i, company_id=doc.company_id, store_id=ln.store_id,
+                doc.lines.append(DocumentLine(line_no=i, company_id=self._line_company(doc.company_id, ln.store_id),
+                                              store_id=ln.store_id,
                                               period_key=ln.period_key, category_code=ln.category_code,
                                               amount=ln.amount, description=ln.description,
                                               is_intercompany=bool(doc.counterparty and doc.counterparty.is_intercompany
@@ -306,6 +308,15 @@ class PostingService:
         return doc
 
     # ------------------------------------------------------------------ 結清狀態
+    def _line_company(self, doc_company: str, store_id: str | None) -> str:
+        """明細算哪家公司的損益：有門市就算門市所屬公司（例：發票開總公司統編、巨蛋店的貨 → 高雄分公司），
+        沒有門市就算單據的公司。門市一定在同一法人內（_validate 已檢查）。"""
+        if store_id:
+            st = self.dir.get_store(store_id)
+            if st is not None and self.dir.same_legal_entity(st.company_id, doc_company):
+                return st.company_id
+        return doc_company
+
     def recompute_settlement(self, doc: Document) -> None:
         if doc.doc_type not in SETTLEABLE_TYPES or doc.settled_by == "petty_cash":
             return

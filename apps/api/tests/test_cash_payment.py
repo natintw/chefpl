@@ -7,8 +7,8 @@ def _pay(client, ids, **kw):
 
 
 def test_cash_pays_several_documents_and_can_be_reversed(client):
-    a = payable(client, company="comp-1", store="store-bh-judan", amount=10500, vendor="張鈞", invoice_no="CC00000001")
-    b = payable(client, company="comp-1790263075210", store="store-bh-dale", amount=2100, vendor="張鈞", invoice_no="CC00000002")
+    a = payable(client, company="comp-1", store="store-bhk-judan", amount=10500, vendor="張鈞", invoice_no="CC00000001")
+    b = payable(client, company="comp-1790263075210", store="store-bhk-dale", amount=2100, vendor="張鈞", invoice_no="CC00000002")
     pl_before = client.get("/api/v1/pl/statement", params={"period_from": "2026-08", "period_to": "2026-08", "company_id": "comp-1"}).json()
     r = _pay(client, [a["id"], b["id"]], source="store_cash", note="大樂店收銀付")
     assert r.status_code == 201, r.text
@@ -31,7 +31,7 @@ def test_cash_pays_several_documents_and_can_be_reversed(client):
 
 
 def test_partial_cash_amount(client):
-    a = payable(client, company="comp-1", store="store-bh-judan", amount=10500, vendor="柯文聖", invoice_no="CC00000003")
+    a = payable(client, company="comp-1", store="store-bhk-judan", amount=10500, vendor="柯文聖", invoice_no="CC00000003")
     r = _pay(client, [a["id"]], amount=10000)
     assert r.status_code == 201, r.text
     doc = client.get(f"/api/v1/documents/{a['id']}").json()
@@ -41,7 +41,7 @@ def test_partial_cash_amount(client):
 
 
 def test_cannot_mix_legal_entities(client):
-    a = payable(client, company="comp-1", store="store-bh-judan", amount=1050, vendor="張鈞", invoice_no="CC00000004")
+    a = payable(client, company="comp-1", store="store-bhk-judan", amount=1050, vendor="張鈞", invoice_no="CC00000004")
     b = payable(client, company="comp-2", store="store-ys-01", amount=1050, vendor="張鈞", invoice_no="CC00000005")
     r = _pay(client, [a["id"], b["id"]])
     assert r.status_code == 422 and "同一家公司" in r.text
@@ -49,7 +49,7 @@ def test_cannot_mix_legal_entities(client):
 
 def test_cash_paid_document_is_skipped_by_bank_matching(client, svc_headers):
     import uuid
-    a = payable(client, company="comp-1", store="store-bh-judan", amount=10500, vendor="協昌菓菜行", invoice_no="CC00000006")
+    a = payable(client, company="comp-1", store="store-bhk-judan", amount=10500, vendor="協昌菓菜行", invoice_no="CC00000006")
     _pay(client, [a["id"]])
     r = client.post("/integration/v1/webhooks/bank-transactions", headers={**svc_headers, "Idempotency-Key": str(uuid.uuid4())},
                     json={"items": [{"cash_txn_id": "B1", "cash_account_id": "acc-3926", "txn_date": "2026-09-30",

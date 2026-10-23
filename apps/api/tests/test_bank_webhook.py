@@ -20,12 +20,12 @@ def _txn(txn_id, amount, **kw):
 
 def _vendor_payables(client):
     # 協昌：博竑總公司、高雄分公司、漢神分公司各一張（同一法人），另一家廠商一張
-    a = payable(client, company="comp-1", store="store-bh-judan", amount=10500, vendor="協昌菓菜行", invoice_no="AB00000001")
-    b = payable(client, company="comp-1790263075210", store="store-bh-dale", amount=21000, vendor="協昌菓菜行",
+    a = payable(client, company="comp-1", store="store-bhk-judan", amount=10500, vendor="協昌菓菜行", invoice_no="AB00000001")
+    b = payable(client, company="comp-1790263075210", store="store-bhk-dale", amount=21000, vendor="協昌菓菜行",
                 invoice_no="AB00000002")
-    c = payable(client, company="comp-bh-hanshin", store="store-bh-counter", amount=5250, vendor="協昌菓菜行",
+    c = payable(client, company="comp-bh-hanshin", store="store-bhh-judan", amount=5250, vendor="協昌菓菜行",
                 invoice_no="AB00000003")
-    o = payable(client, company="comp-1", store="store-bh-judan", amount=8400, vendor="美食家食材通路股份有限公司",
+    o = payable(client, company="comp-1", store="store-bhk-judan", amount=8400, vendor="美食家食材通路股份有限公司",
                 invoice_no="AB00000004")
     return a, b, c, o
 

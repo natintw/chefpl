@@ -1,14 +1,14 @@
 [
-  {"id": "store-bh-factory", "company_id": "comp-1", "code": "BH-FAC", "name": "博竑食品", "kind": "factory"},
-  {"id": "store-bh-judan", "company_id": "comp-1", "code": "BH-JD", "name": "巨蛋店", "kind": "restaurant"},
-  {"id": "store-bh-dale", "company_id": "comp-1790263075210", "code": "BH-DL", "name": "大樂店", "kind": "restaurant"},
-  {"id": "store-bh-hanshin", "company_id": "comp-1790263075210", "code": "BH-HS", "name": "漢神店", "kind": "restaurant"},
-  {"id": "store-bh-yixiang", "company_id": "comp-1790263075210", "code": "BH-YX", "name": "義享店", "kind": "restaurant"},
-  {"id": "store-bh-dreammall", "company_id": "comp-1790263075210", "code": "BH-DM", "name": "夢時代", "kind": "restaurant"},
-  {"id": "store-bh-counter", "company_id": "comp-bh-hanshin", "code": "BH-HSA", "name": "漢神巨蛋店", "kind": "restaurant"},
+  {"id": "store-bh-factory", "company_id": "comp-1", "code": "BH-FAC", "name": "博竑食品（工廠）", "kind": "factory"},
+  {"id": "store-bhk-judan", "company_id": "comp-1790263075210", "code": "BHK-JD", "name": "巨蛋店", "kind": "restaurant"},
+  {"id": "store-bhk-dale", "company_id": "comp-1790263075210", "code": "BHK-DL", "name": "大樂店", "kind": "restaurant"},
+  {"id": "store-bhk-hanshin", "company_id": "comp-1790263075210", "code": "BHK-HS", "name": "漢神店", "kind": "restaurant"},
+  {"id": "store-bhk-yixiang", "company_id": "comp-1790263075210", "code": "BHK-YX", "name": "義享店", "kind": "restaurant"},
+  {"id": "store-bhk-dreammall", "company_id": "comp-1790263075210", "code": "BHK-DM", "name": "夢時代", "kind": "restaurant"},
+  {"id": "store-bhh-judan", "company_id": "comp-bh-hanshin", "code": "BHH-JD", "name": "漢神巨蛋店", "kind": "restaurant"},
   {"id": "store-br-yucheng", "company_id": "comp-borren", "code": "BR-YC", "name": "裕誠店", "kind": "restaurant"},
   {"id": "store-ct-01", "company_id": "comp-1790263102815", "code": "CT-ZZ", "name": "中正店", "kind": "restaurant"},
-  {"id": "store-ms-main", "company_id": "comp-1790263124662", "code": "MS-MA", "name": "美術館店", "kind": "restaurant"},
-  {"id": "store-ms-wenheng", "company_id": "comp-1790322196308", "code": "MS-WH", "name": "文衡門市", "kind": "restaurant"},
+  {"id": "store-ms-01", "company_id": "comp-1790263124662", "code": "MS-MA", "name": "美術館店", "kind": "restaurant"},
+  {"id": "store-msw-01", "company_id": "comp-1790322196308", "code": "MSW-WH", "name": "文衡門市", "kind": "restaurant"},
   {"id": "store-ys-01", "company_id": "comp-2", "code": "YS-QN", "name": "青年店", "kind": "restaurant"}
 ]
