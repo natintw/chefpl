@@ -17,8 +17,12 @@ export type OverviewRow = Kpis & { company: { id: string; name: string }; store:
 /** 公司小計：旗下門市＋公司層級（未分攤）。集團內交易在公司層級不沖銷。 */
 export type CompanySubtotal = Kpis & { id: string; name: string; parent_company_id: string | null; revenue: number;
   stores_operating_profit: number; unallocated_amount: number; operating_profit: number; net_profit: number };
+/** 法人合計：總公司＋旗下分公司。 */
+export type EntityTotal = Kpis & { id: string; name: string; company_ids: string[]; revenue: number;
+  operating_profit: number; net_profit: number };
 export type Overview = { period: string; totals: Kpis & { revenue: number; gross_profit: number;
   store_operating_profit: number; net_profit: number }; rows: OverviewRow[]; companies?: CompanySubtotal[];
+  entities?: EntityTotal[];
   unallocated_amount: number;
   intercompany_unmatched: number; accrual_amount: number; advance_balance: number; stores_with_data: number };
 

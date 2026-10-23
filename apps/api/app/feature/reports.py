@@ -167,6 +167,7 @@ class ReportService:
         accrual_by_company = self._accrual_amounts(period, cids)
         adv = self.docs.advance_balance(cids)
         out_rows, unallocated, company_rows = [], 0, []
+        subs: dict[str, _Col] = {}
         for c in companies:
             sub = _Col()  # 公司小計＝旗下門市＋公司層級（未分攤），集團內交易在公司層級不沖銷
             for st in self.dir.list_stores(c.id):
@@ -185,10 +186,25 @@ class ReportService:
                 sub.merge(un)
             if scope.store_only:  # 只看得到門市的人（店長）不顯示公司小計
                 continue
+            subs[c.id] = sub
             company_rows.append({"id": c.id, "name": c.name, "parent_company_id": c.parent_company_id,
                                  "revenue": sub.revenue, "stores_operating_profit": stores_op,
                                  "unallocated_amount": un_amount, "operating_profit": sub.store_op,
                                  "net_profit": sub.net, **sub.kpis()})
+        # 法人合計：總公司＋旗下分公司（同一統編、同一法人），只有帶分公司的總公司才有
+        entities = []
+        for parent in companies:
+            if parent.parent_company_id or parent.id not in subs:
+                continue
+            branches = [c for c in companies if c.parent_company_id == parent.id and c.id in subs]
+            if not branches:
+                continue
+            ent = _Col()
+            for cid in [parent.id] + [b.id for b in branches]:
+                ent.merge(subs[cid])
+            entities.append({"id": parent.id, "name": parent.name, "company_ids": [parent.id] + [b.id for b in branches],
+                             "revenue": ent.revenue, "operating_profit": ent.store_op, "net_profit": ent.net,
+                             **ent.kpis()})
         retail = [r for r in out_rows if r["store"]["id"] in per]
         return {
             "period": period,
@@ -196,6 +212,7 @@ class ReportService:
                        "store_operating_profit": group.store_op, "net_profit": group.net, **group.kpis()},
             "rows": out_rows,
             "companies": company_rows,
+            "entities": entities,
             "unallocated_amount": unallocated,
             "intercompany_unmatched": group.ic_rev - group.ic_cogs,
             "accrual_amount": sum(accrual_by_company.values()),

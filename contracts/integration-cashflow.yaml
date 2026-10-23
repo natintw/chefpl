@@ -406,7 +406,7 @@ paths:
                         updated_at: '2026-09-24T15:17:06Z'
                       - id: comp-1790263075210
                         code: BH-BR
-                        name: 博竑食品有限公司漢神分公司
+                        name: 博竑食品有限公司高雄分公司
                         tax_id: null
                         parent_company_id: comp-1
                         is_active: true

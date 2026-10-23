@@ -1,13 +1,13 @@
 "use client";
 /** S1 損益總覽（Bill 首頁）。資料：GET /pl/overview。 */
 import Link from "next/link";
-import { useMemo } from "react";
+import { Fragment, useMemo } from "react";
 import { PageHeader } from "@/components/Shell";
 import { PeriodPicker, useQuery } from "@/components/filters";
 import { Empty, ErrorBox, KpiSkeleton, Skeleton, Tag } from "@/components/ui";
 import { useApi } from "@/lib/api";
 import { addMonths, GROUP_NAME, money, pct, PRIME_WARN } from "@/lib/format";
-import type { CompanySubtotal, Overview, OverviewRow } from "@/lib/types";
+import type { CompanySubtotal, EntityTotal, Overview, OverviewRow } from "@/lib/types";
 
 export default function OverviewPage() {
   const q = useQuery();
@@ -85,12 +85,21 @@ export default function OverviewPage() {
                   <thead><tr><th>公司／門市</th><th className="r">營收</th><th className="r">Food cost</th><th className="r">Labor</th>
                     <th className="r">Prime</th><th className="r">營業利益</th><th className="r">利潤率</th><th>資料</th></tr></thead>
                   <tbody>
-                    {groups.map(([cid, g]) => (
-                      <GroupRows key={cid} name={g.name} rows={g.rows} sub={g.sub}
-                                 companyHref={q.link("/pl", { company: cid, store: null })}
-                                 unallocHref={q.link("/pl", { company: cid, store: "unallocated" })}
-                                 href={(r) => q.link("/pl", { company: r.company.id, store: r.store.id })} />
-                    ))}
+                    {groups.map(([cid, g], i) => {
+                      const root = g.sub?.parent_company_id || cid;
+                      const next = groups[i + 1];
+                      const nextRoot = next ? (next[1].sub?.parent_company_id || next[0]) : null;
+                      const ent = nextRoot !== root ? d.entities?.find((e) => e.id === root) : undefined;
+                      return (
+                        <Fragment key={cid}>
+                          <GroupRows name={g.name} rows={g.rows} sub={g.sub}
+                                     companyHref={q.link("/pl", { company: cid, store: null })}
+                                     unallocHref={q.link("/pl", { company: cid, store: "unallocated" })}
+                                     href={(r) => q.link("/pl", { company: r.company.id, store: r.store.id })} />
+                          {ent && <EntityRow e={ent} />}
+                        </Fragment>
+                      );
+                    })}
                     {!d.companies && d.unallocated_amount !== 0 && (
                       <tr><td className="sub">公司層級（未分攤）</td><td className="r">—</td><td className="r">—</td><td className="r">—</td><td className="r">—</td>
                         <td className="num r neg">{money(-d.unallocated_amount)}</td><td className="r">—</td><td><Tag kind="warn">未分攤</Tag></td></tr>
@@ -133,6 +142,22 @@ function Kpi({ label, value, foot, alert }: { label: string; value: React.ReactN
       <div className={`v ${alert ? "warnv" : ""}`}>{value}</div>
       <div className="small">{foot}</div>
     </div>
+  );
+}
+
+function EntityRow({ e }: { e: EntityTotal }) {
+  const hot = (e.prime_cost_pct ?? 0) > PRIME_WARN;
+  return (
+    <tr className="subt" title={`含 ${e.company_ids.length - 1} 家分公司`}>
+      <td>{e.name} 法人合計</td>
+      <td className="num r">{money(e.revenue)}</td>
+      <td className="num r">{pct(e.food_cost_pct)}</td>
+      <td className="num r">{pct(e.labor_cost_pct)}</td>
+      <td className={`num r ${hot ? "warnv" : ""}`}>{pct(e.prime_cost_pct)}</td>
+      <td className="num r">{money(e.operating_profit)}</td>
+      <td className="num r">{pct(e.store_margin_pct)}</td>
+      <td className="small">總公司＋分公司</td>
+    </tr>
   );
 }
 
