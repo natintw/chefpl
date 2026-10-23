@@ -131,10 +131,19 @@ export default function VendorsPage() {
             </table>
           </div>
         )}
-        <p className="small" style={{ margin: 0, padding: "12px 16px" }}>
-          整批設定：先「下載 Excel」，在「類別代碼」欄填代碼（第二個工作表有代碼表），再「上傳 Excel」。統編相同、名稱不同時，以 Excel 的名稱為準，舊名稱會留作「也寫作」。
-          集團內公司之間的進貨固定記 C99，不能改。
-        </p>
+        <div className="small" style={{ padding: "12px 16px" }}>
+          <p style={{ margin: "0 0 6px" }}>
+            整批設定：Excel 一個工作表、四欄 <b>統一編號｜廠商名稱｜類別代碼｜類別名稱</b>。「類別代碼」和「類別名稱」填一個就好，兩個都填要一致。
+            先「下載 Excel」改好再「上傳 Excel」；統編相同、名稱不同時以 Excel 的名稱為準，舊名稱會留作「也寫作」。
+            集團內公司之間的進貨固定記 C99，不在表裡。
+          </p>
+          <details>
+            <summary style={{ cursor: "pointer" }}>類別代碼一覽</summary>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "2px 16px", marginTop: 8 }}>
+              {vendorCats.map((c) => <span key={c.code}><span className="num">{c.code}</span> {c.name}{c.nature === "balance" ? "（不入損益）" : ""}</span>)}
+            </div>
+          </details>
+        </div>
       </section>
     </>
   );

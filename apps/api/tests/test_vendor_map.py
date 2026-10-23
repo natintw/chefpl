@@ -64,3 +64,23 @@ def test_freight_category_available(client):
     assert [cats[c]["name"] for c in ("E14", "E15", "E16")] == ["交通費", "設備費", "系統租用費"]
     res = _map(client, [["統一編號", "廠商名稱", "類別代碼"], ["06898848", "新竹物流股份有限公司", "E13"]])
     assert res["created"] == 1 and res["errors"] == []
+
+
+def test_standard_four_column_format(client):
+    # 只填類別名稱、統編被 Excel 當數字（掉了開頭的 0）、代碼與名稱矛盾
+    res = _map(client, [["統一編號", "廠商名稱", "類別代碼", "類別名稱"],
+                        ["13647452", "協昌菓菜行", "", "蔬果"],
+                        [3336704, "泰安產物保險股份有限公司", "O04", "保險"],
+                        ["79264504", "明台產物保險", "C01", "保險"],
+                        ["06898848", "新竹物流", "", "不存在的類別"]])
+    assert res["created"] == 2 and len(res["errors"]) == 2
+    vm = {v["tax_id"]: v for v in client.get("/api/v1/settings/vendor-map").json()["items"]}
+    assert vm["13647452"]["category_code"] == "C01" and vm["03336704"]["category_code"] == "O04"
+
+    from io import BytesIO
+    from openpyxl import load_workbook
+    wb = load_workbook(BytesIO(client.get("/api/v1/settings/vendor-map/export").content))
+    assert wb.sheetnames == ["廠商類別"]
+    rows = list(wb.active.iter_rows(values_only=True))
+    assert list(rows[0]) == ["統一編號", "廠商名稱", "類別代碼", "類別名稱"]
+    assert ("03336704", "泰安產物保險股份有限公司", "O04", "保險") in [tuple(r) for r in rows]

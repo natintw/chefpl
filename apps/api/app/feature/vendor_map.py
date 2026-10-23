@@ -28,10 +28,13 @@ from app.feature.models import Counterparty, Document, ReviewItem
 from app.feature.repositories import CatalogRepository, OpsRepository
 
 MASKED_RE = re.compile(r"^[A-Z][12]\*{5}\d{3}$")
+# 標準格式（一個工作表、四欄）：統一編號｜廠商名稱｜類別代碼｜類別名稱
+HEADERS = ["統一編號", "廠商名稱", "類別代碼", "類別名稱"]
 ALIASES = {
     "tax_id": ["統一編號", "廠商統編", "統編"],
-    "name": ["廠商名稱", "廠商", "名稱"],
-    "category": ["類別代碼", "類別"],
+    "name": ["廠商名稱", "廠商"],
+    "category": ["類別代碼"],
+    "category_name": ["類別名稱"],
 }
 VENDOR_NATURES = {"expense", "balance"}
 
@@ -98,15 +101,33 @@ class VendorMapService:
             ws = load_workbook(io.BytesIO(data), data_only=True, read_only=True).worksheets[0]
         except Exception as e:  # noqa: BLE001
             raise ValidationFailed(f"讀不到這個檔案（{type(e).__name__}），請上傳 .xlsx") from e
-        header_row, col = _find_header(ws, ALIASES, ["category"])
-        if header_row is None or ("tax_id" not in col and "name" not in col):
-            raise ValidationFailed("找不到「類別代碼」欄，以及「統一編號」或「廠商名稱」欄")
+        header_row, col = None, {}
+        for need in (["tax_id", "category"], ["tax_id", "category_name"], ["name", "category"], ["name", "category_name"]):
+            h, c = _find_header(ws, ALIASES, need)
+            if h is not None and (header_row is None or h < header_row):
+                header_row, col = h, c
+        if header_row is None:
+            raise ValidationFailed("格式為四欄：" + "｜".join(HEADERS) + "（類別代碼、類別名稱至少要有一欄）")
+        by_name = {c.name: c.code for c in self.catalog.categories.values()}
         res = ImportResult()
         for r_idx, raw in enumerate(ws.iter_rows(min_row=header_row + 1, values_only=True), start=header_row + 1):
             get = lambda k: raw[col[k]] if k in col and col[k] < len(raw) else None  # noqa: E731
             name = str(get("name") or "").strip()
             code_raw = _norm(get("tax_id")).upper()
+            if code_raw.isdigit() and len(code_raw) < 8:  # Excel 把統編當數字，前面的 0 不見了
+                code_raw = code_raw.zfill(8)
             category = _norm(get("category")).upper()
+            cat_name = _norm(get("category_name"))
+            if cat_name:
+                named = by_name.get(cat_name)
+                if not category and named:
+                    category = named  # 只填類別名稱也可以
+                elif category and named and named != category:
+                    res.errors.append({"row": r_idx, "message": f"類別代碼 {category} 與類別名稱「{cat_name}」不一致"})
+                    continue
+                elif not category and not named:
+                    res.errors.append({"row": r_idx, "message": f"找不到類別名稱「{cat_name}」"})
+                    continue
             if not name and not code_raw:
                 continue
             tax_id = code_raw if TAX_ID_RE.match(code_raw) else None
@@ -147,27 +168,23 @@ class VendorMapService:
         wb = Workbook()
         ws = wb.active
         ws.title = "廠商類別"
-        head = ["統一編號", "廠商名稱", "類別代碼", "類別名稱", "其他寫法（發票辨識）", "張數", "累計含稅金額"]
-        ws.append(head)
+        ws.append(HEADERS)
         for c in ws[1]:
             c.font, c.fill = Font(bold=True), PatternFill("solid", fgColor="E8EEF6")
         for r in self.list():
-            ws.append([r["tax_id"] or r["id_masked"] or "", r["name"], r["category_code"] or "", r["category_name"] or "",
-                       "、".join(r["aliases"]), r["doc_count"], r["amount"]])
-        for letter, width in zip("ABCDEFG", (12, 34, 10, 16, 40, 8, 14)):
+            if r["is_intercompany"]:
+                continue  # 集團內公司固定 C99，不放進對應表
+            ws.append([r["tax_id"] or r["id_masked"] or "", r["name"], r["category_code"] or "", r["category_name"] or ""])
+        for row in ws.iter_rows(min_row=2, max_col=1):
+            row[0].number_format = "@"  # 統編存成文字，保留開頭的 0
+        for letter, width in zip("ABCD", (12, 36, 10, 14)):
             ws.column_dimensions[letter].width = width
         ws.freeze_panes = "A2"
-        cats = [c for c in self.catalog.categories.values() if c.nature in VENDOR_NATURES and c.is_active]
-        ref = wb.create_sheet("類別代碼表")
-        ref.append(["類別代碼", "類別名稱", "損益表區塊", "說明"])
-        for c in ref[1]:
-            c.font = Font(bold=True)
-        for c in cats:
-            ref.append([c.code, c.name, c.pl_section, "不進損益，只記餘額" if c.nature == "balance" else ""])
-        ref.column_dimensions["B"].width = 18
-        dv = DataValidation(type="list", formula1=f"='類別代碼表'!$A$2:$A${len(cats) + 1}", allow_blank=True)
-        ws.add_data_validation(dv)
-        dv.add(f"C2:C{max(ws.max_row, 2) + 200}")
+        codes = ",".join(c.code for c in self.catalog.categories.values() if c.nature in VENDOR_NATURES and c.is_active)
+        if len(codes) <= 255:  # 類別代碼欄的下拉選單（Excel 清單上限 255 字）
+            dv = DataValidation(type="list", formula1=f'"{codes}"', allow_blank=True)
+            ws.add_data_validation(dv)
+            dv.add(f"C2:C{max(ws.max_row, 2) + 200}")
         buf = io.BytesIO()
         wb.save(buf)
         return buf.getvalue()
