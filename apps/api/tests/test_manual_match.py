@@ -196,3 +196,18 @@ def test_batch_move_to_store_and_overview_shows_company_level(client, svc_header
                                                     "store_id": "store-ys-01", "columns": "month"}).json()
     assert [l for s in pl["sections"] for l in s["lines"] if l["category_code"] == "P01"][0]["values"]["total"] == 20000
     assert client.get(f"/api/v1/documents/{doc['id']}").json()["settle_status"] == "settled"
+
+
+def test_batch_change_period(client, svc_headers):
+    """選錯月份：應付單據一次改損益月份；已付狀態不變；已關帳的月份不能改進去。"""
+    _send(client, svc_headers, _txn("PD1", 30000, counterparty_name="施駿緯", txn_date="2026-10-05", cash_account_id="acc-3312"))
+    it = next(i for i in client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]
+              if i["payload"]["item"]["cash_txn_id"] == "PD1")
+    client.post("/api/v1/review-items/batch", json={"ids": [it["id"]], "action": "create_document",
+                                                   "payload": {"category_code": "P01", "period_mode": "same"}})
+    doc = client.get("/api/v1/documents", params={"company_id": "comp-2", "period": "2026-10", "doc_type": "payable"}).json()["items"][0]
+    r = client.post("/api/v1/documents/batch-period", json={"document_ids": [doc["id"]], "period_key": "2026-09"})
+    assert r.status_code == 200 and r.json()["ok"] == [doc["id"]], r.text
+    d = client.get(f"/api/v1/documents/{doc['id']}").json()
+    assert d["period_keys"] == ["2026-09"] and d["settle_status"] == "settled"
+    assert client.post("/api/v1/documents/batch-period", json={"document_ids": [doc["id"]], "period_key": "2026-13"}).status_code == 422

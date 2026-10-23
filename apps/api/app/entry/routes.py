@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.db import get_ledger_session
 from app.entry import serializers as ser
 from app.entry.deps import current_user, need
-from app.entry.schemas import (BatchResolveIn, BatchStoreIn, CashPaymentIn, AccrualBatchIn, AccrualTemplateIn, CloseIn, CounterpartyIn, CounterpartyPatch,
+from app.entry.schemas import (BatchPeriodIn, BatchResolveIn, BatchStoreIn, CashPaymentIn, AccrualBatchIn, AccrualTemplateIn, CloseIn, CounterpartyIn, CounterpartyPatch,
                                DocumentCreate, DocumentPatch, LinkAccrualIn, RecognizeIn, RecurringIn, ReopenIn,
                                ResolveIn, RuleIn, VoidIn)
 from app.errors import AppError, Forbidden, NotFound, ValidationFailed
@@ -252,6 +252,29 @@ def batch_store(body: BatchStoreIn, user: UserPrincipal = Depends(need("doc.edit
                 svc.update(doc_id, d.version, user.actor, lines=lines)
                 if d.counterparty is not None and body.store_id:
                     d.counterparty.default_store_id = body.store_id   # 下次同一個對象自動帶這家門市
+            ok.append(str(doc_id))
+        except AppError as e:
+            failed.append({"id": str(doc_id), "message": e.message})
+    return {"ok": ok, "failed": failed}
+
+
+@router.post("/documents/batch-period")
+def batch_period(body: BatchPeriodIn, user: UserPrincipal = Depends(need("doc.edit")),
+                 s: Session = Depends(get_ledger_session, scope="function")):
+    """勾選的單據一次改損益月份。分攤到多個月份的單據（例：固定費用、預估）不在這裡改；已關帳的月份不能改。"""
+    svc = PostingService(s)
+    ok, failed = [], []
+    for doc_id in body.document_ids:
+        try:
+            with s.begin_nested():
+                d = _doc_or_404(s, user, doc_id)
+                if len({l.period_key for l in d.lines}) > 1:
+                    raise ValidationFailed("這張單據分到多個月份，請打開單據個別修改")
+                if all(l.period_key == body.period_key for l in d.lines):
+                    ok.append(str(doc_id))
+                    continue
+                lines = [LineInput(body.period_key, l.category_code, l.amount, l.store_id, l.description) for l in d.lines]
+                svc.update(doc_id, d.version, user.actor, lines=lines)
             ok.append(str(doc_id))
         except AppError as e:
             failed.append({"id": str(doc_id), "message": e.message})

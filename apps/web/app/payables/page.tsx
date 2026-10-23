@@ -210,7 +210,7 @@ function CashBar({ docs, type, onDone, onClear }: { docs: Doc[]; type: T; onDone
   );
 }
 
-/** 勾選的單據一次改到某家門市（例：先記在公司層級的薪資改到青年店）。POST /documents/batch-store */
+/** 勾選的單據一次改門市或損益月份（例：薪資改到青年店；銀行交易選錯月份）。POST /documents/batch-store、batch-period */
 function StoreBar({ docs, onDone }: { docs: Doc[]; onDone: () => void }) {
   const toast = useToast();
   const { dir } = useDirectory();
@@ -222,7 +222,18 @@ function StoreBar({ docs, onDone }: { docs: Doc[]; onDone: () => void }) {
   const roots = new Set(docs.map((d) => root(d.company_id)));
   const stores = roots.size === 1 ? dir.stores.filter((st) => root(st.company_id) === [...roots][0]) : [];
   const [store, setStore] = useState("");
+  const [month, setMonth] = useState("");
   const [busy, setBusy] = useState(false);
+  async function goPeriod() {
+    setBusy(true);
+    try {
+      const r = await apiSend<{ ok: string[]; failed: { message: string }[] }>("POST", "/documents/batch-period",
+        { document_ids: docs.map((d) => d.id), period_key: month });
+      toast(r.failed.length ? `改好 ${r.ok.length} 張，${r.failed.length} 張失敗：${r.failed[0].message}` : `已改到 ${month}：${r.ok.length} 張`,
+            r.failed.length ? "error" : "ok");
+      onDone();
+    } catch (e) { toast((e as Error).message || "改月份失敗", "error"); } finally { setBusy(false); }
+  }
   async function go() {
     setBusy(true);
     try {
@@ -241,7 +252,10 @@ function StoreBar({ docs, onDone }: { docs: Doc[]; onDone: () => void }) {
           {stores.map((st) => <option key={st.id} value={st.id}>{st.code} {st.name}</option>)}
         </select></label>
       <button className="btn" disabled={busy || roots.size !== 1} onClick={go}>{busy ? "處理中…" : "改門市"}</button>
-      {roots.size > 1 && <span className="small">勾選的跨不同公司，請分開改</span>}
+      {roots.size > 1 && <span className="small">勾選的跨不同公司，門市請分開改</span>}
+      <label className="ctl" style={{ marginLeft: 12 }}><span className="k">改損益月份</span>
+        <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label>
+      <button className="btn" disabled={busy || !month} onClick={goPeriod}>{busy ? "處理中…" : "改月份"}</button>
     </div>
   );
 }
