@@ -4,7 +4,8 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Query, UploadFile
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.db import get_ledger_session
@@ -16,6 +17,7 @@ from app.entry.schemas import (AccrualBatchIn, AccrualTemplateIn, CloseIn, Count
 from app.errors import Forbidden, NotFound, ValidationFailed
 from app.feature.accruals import AccrualService, AdvanceService
 from app.feature.common import LineInput
+from app.feature.imports.parsers import looks_like_invoice_summary
 from app.feature.imports.service import ImportService
 from app.feature.models import AccrualTemplate, RecurringTemplate
 from app.feature.periods import PeriodService
@@ -23,6 +25,7 @@ from app.feature.posting import PostingService
 from app.feature.reports import ReportService
 from app.feature.repositories import CatalogRepository, DocumentRepository, OpsRepository
 from app.feature.review import ReviewService
+from app.feature.vendor_map import VendorMapService
 from app.guard.principals import UserPrincipal
 from app.seams.company import get_directory
 
@@ -39,6 +42,10 @@ def _cids(user: UserPrincipal) -> set[str] | None:
 
 def _check_company(user: UserPrincipal, company_id: str) -> None:
     cids = _cids(user)
+    if company_id == "*":  # 涵蓋所有公司的批次（發票彙總表）：要能看全部公司
+        if cids is not None:
+            raise Forbidden("這個檔案包含所有公司，只有可以看全部公司的帳號能匯入")
+        return
     if cids is not None and company_id not in cids:
         raise Forbidden("你沒有這家公司的權限")
 
@@ -219,11 +226,15 @@ def recognize(body: RecognizeIn, user: UserPrincipal = Depends(need("doc.create"
 
 # ---------------------------------------------------------------- 匯入
 @router.post("/imports", status_code=201)
-async def upload_import(kind: str = Form(...), company_id: str = Form(...), period: str = Form(...),
+async def upload_import(kind: str = Form(...), company_id: str = Form("*"), period: str = Form(...),
                         store_id: str | None = Form(None), file: UploadFile = File(...),
                         user: UserPrincipal = Depends(need("import.run")), s: Session = Depends(get_ledger_session)):
-    _check_company(user, company_id)
     data = await file.read()
+    if kind == "ap_sheet" and looks_like_invoice_summary(data):
+        kind = "invoice_summary"  # 選了應付表但其實是發票系統的彙總表
+    if kind == "invoice_summary":
+        company_id = "*"
+    _check_company(user, company_id)
     svc = ImportService(s)
     return svc.serialize(svc.upload(kind=kind, company_id=company_id, period=period, store_id=store_id,
                                     file_name=file.filename or "upload.xlsx", data=data, actor=user.actor))
@@ -328,6 +339,34 @@ def patch_counterparty(cp_id: uuid.UUID, body: CounterpartyPatch, user: UserPrin
     for k, v in body.model_dump(exclude_none=True).items():
         setattr(cp, k, v)
     return {"id": str(cp.id), "name": cp.name}
+
+
+# ---------------------------------------------------------------- 廠商類別對應表
+@router.get("/settings/vendor-map")
+def vendor_map(q: str | None = None, only_unmapped: bool = False, user: UserPrincipal = Depends(need("doc.view")),
+               s: Session = Depends(get_ledger_session)):
+    return {"items": VendorMapService(s).list(q, only_unmapped)}
+
+
+@router.patch("/settings/vendor-map/{cp_id}")
+def set_vendor_category(cp_id: uuid.UUID, category_code: str | None = Body(None, embed=True),
+                        name: str | None = Body(None, embed=True),
+                        user: UserPrincipal = Depends(need("settings.manage")), s: Session = Depends(get_ledger_session)):
+    return VendorMapService(s).set(cp_id, category_code, user.actor, name=name)
+
+
+@router.post("/settings/vendor-map/import")
+async def import_vendor_map(file: UploadFile = File(...), user: UserPrincipal = Depends(need("settings.manage")),
+                            s: Session = Depends(get_ledger_session)):
+    from dataclasses import asdict
+    return asdict(VendorMapService(s).import_xlsx(await file.read(), user.actor))
+
+
+@router.get("/settings/vendor-map/export")
+def export_vendor_map(user: UserPrincipal = Depends(need("doc.view")), s: Session = Depends(get_ledger_session)):
+    return Response(VendorMapService(s).export_xlsx(),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename*=UTF-8''vendor-categories.xlsx"})
 
 
 @router.post("/settings/rules", status_code=201)

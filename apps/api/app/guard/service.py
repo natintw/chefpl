@@ -15,6 +15,7 @@ import time
 from functools import lru_cache
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -60,11 +61,17 @@ def current_user(session: Session, authorization: str | None, dev_user: str | No
         admins = {a.strip() for a in s.bootstrap_admins.split(",") if a.strip()}
         if email not in admins:
             raise Forbidden("你還沒有這個系統的帳號，請洽管理者")
-        user = User(email=email, name=name, role="admin")
-        session.add(user)
-        session.flush()
-        session.add(UserScope(user_id=user.id, scope_kind="all", scope_id="*"))
-        session.flush()
+        try:  # 第一次登入時前端會同時發好幾個請求，可能有兩個同時想建立同一個帳號
+            with session.begin_nested():
+                user = User(email=email, name=name, role="admin")
+                session.add(user)
+                session.flush()
+                session.add(UserScope(user_id=user.id, scope_kind="all", scope_id="*"))
+                session.flush()
+        except IntegrityError:
+            user = session.scalar(select(User).where(User.email == email))
+            if user is None:
+                raise
     if not user.is_active:
         raise Forbidden("帳號已停用")
     return UserPrincipal(email=user.email, name=user.name, role=user.role, scope=_scope_for(session, user))

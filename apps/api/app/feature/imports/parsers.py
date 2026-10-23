@@ -161,6 +161,97 @@ def parse_ap_sheet(data: bytes) -> ParseResult:
     return ParseResult(rows, errors, warnings, {"header_row": header_row})
 
 
+# ---------------------------------------------------------------------- 發票系統「廠商應付彙總表」
+# 一列＝入帳公司 × 門市 × 廠商 × 發票月份 × 入帳月份 的含稅合計；一個檔案涵蓋所有公司。
+INVOICE_SUMMARY_ALIASES = {
+    "company_name": ["入帳公司名稱", "入帳公司"],
+    "company_tax_id": ["公司統編"],
+    "store": ["門市名稱"],
+    "store_code": ["門市代碼"],
+    "invoice_month": ["發票月份"],
+    "period": ["入帳月份"],
+    "vendor": ["廠商名稱"],
+    "vendor_tax_id": ["統一編號", "廠商統編"],
+    "invoice_count": ["發票張數"],
+    "amount": ["含稅應付總計", "應付總計", "含稅金額"],
+    "due": ["預計付款日"],
+}
+_MONTH_RE = re.compile(r"^(\d{4})-(\d{1,2})$")
+
+
+def _month(v: Any) -> str | None:
+    if isinstance(v, (datetime, date)):
+        return f"{v.year:04d}-{v.month:02d}"
+    m = _MONTH_RE.match(_norm(v).replace("/", "-"))
+    if not m or not 1 <= int(m.group(2)) <= 12:
+        return None
+    return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}"
+
+
+def looks_like_invoice_summary(data: bytes) -> bool:
+    try:
+        ws = load_workbook(io.BytesIO(data), data_only=True, read_only=True).worksheets[0]
+    except Exception:  # noqa: BLE001
+        return False
+    row, _ = _find_header(ws, INVOICE_SUMMARY_ALIASES, ["company_tax_id", "vendor", "amount", "period"])
+    return row is not None
+
+
+def parse_invoice_summary(data: bytes) -> ParseResult:
+    wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    ws = wb.worksheets[0]
+    header_row, col = _find_header(ws, INVOICE_SUMMARY_ALIASES, ["company_tax_id", "vendor", "amount", "period"])
+    if header_row is None:
+        return ParseResult([], [{"row": 0, "code": "NO_HEADER",
+                                 "message": "找不到「公司統編」「廠商名稱」「入帳月份」「含稅應付總計」欄"}], [])
+    rows: list[ParsedRow] = []
+    errors: list[dict] = []
+    warnings: list[dict] = []
+    for r_idx, raw in enumerate(ws.iter_rows(min_row=header_row + 1, values_only=True), start=header_row + 1):
+        get = lambda k: raw[col[k]] if k in col and col[k] < len(raw) else None  # noqa: E731
+        if not any(v is not None and str(v).strip() for v in raw):
+            continue
+        vendor = str(get("vendor") or "").strip()
+        if any(k in vendor for k in ("合計", "總計", "小計")):
+            continue
+        amount = _to_int(get("amount"))
+        period = _month(get("period"))
+        company_tax_id = _norm(get("company_tax_id"))
+        missing = [n for n, ok in (("廠商名稱", vendor), ("含稅應付總計", amount is not None),
+                                   ("入帳月份", period), ("公司統編", TAX_ID_RE.match(company_tax_id))) if not ok]
+        if missing:
+            errors.append({"row": r_idx, "code": "MISSING_FIELD", "message": f"缺少或格式錯誤：{'、'.join(missing)}"})
+            continue
+        if amount == 0:
+            continue
+        pr = ParsedRow(row=r_idx, values={
+            "company_tax_id": company_tax_id, "company_name": _norm(get("company_name")) or None,
+            "store": str(get("store") or "").strip() or None, "store_code": _norm(get("store_code")) or None,
+            "period": period, "vendor": vendor, "amount": amount,
+            "invoice_count": _to_int(get("invoice_count")) or 0,
+        })
+        inv_month = _month(get("invoice_month"))
+        if inv_month is None:
+            pr.values["invoice_month"] = period
+            pr.warnings.append({"code": "BAD_INVOICE_MONTH",
+                                "message": f"發票月份「{get('invoice_month')}」格式錯誤，以入帳月份 {period} 代替"})
+        else:
+            pr.values["invoice_month"] = inv_month
+        due_m = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", str(get("due") or ""))
+        pr.values["due"] = f"{due_m.group(1)}-{int(due_m.group(2)):02d}-{int(due_m.group(3)):02d}" if due_m else None
+        code = _norm(get("vendor_tax_id")).upper()
+        if ID_NUMBER_RE.match(code):
+            pr.values["id_masked"] = mask_id_number(code)
+            pr.warnings.append({"code": "ID_NUMBER", "message": "廠商統編欄是身分證字號（個人），已遮蔽；視為無發票"})
+        elif TAX_ID_RE.match(code):
+            pr.values["tax_id"] = code
+        else:
+            pr.warnings.append({"code": "NO_TAX_ID", "message": "廠商沒有統一編號，只能用名稱比對"})
+        rows.append(pr)
+        warnings.extend({"row": r_idx, **w} for w in pr.warnings)
+    return ParseResult(rows, errors, warnings, {"header_row": header_row})
+
+
 # ---------------------------------------------------------------------- 薪資表（門市彙總）
 PAYROLL_ALIASES = {
     "store": ["門市", "店別", "店名", "部門"],
@@ -194,4 +285,4 @@ def parse_payroll(data: bytes) -> ParseResult:
     return ParseResult(rows, errors, [])
 
 
-PARSERS = {"ap_sheet": parse_ap_sheet, "payroll": parse_payroll}
+PARSERS = {"ap_sheet": parse_ap_sheet, "payroll": parse_payroll, "invoice_summary": parse_invoice_summary}

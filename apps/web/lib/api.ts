@@ -59,6 +59,16 @@ export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
   return handle<T>(await fetch(`/api/v1${path}`, { method: "POST", headers: headers(), body: form }));
 }
 
+/** 下載檔案（帶登入標頭），存成 filename。 */
+export async function apiDownload(path: string, filename: string): Promise<void> {
+  const res = await fetch(`/api/v1${path}`, { headers: headers(), cache: "no-store" });
+  if (!res.ok) await handle(res);
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 /** 讀取資料的 hook：{ data, error, loading, reload }。key 改變時重新讀取。 */
 export function useApi<T>(path: string | null, params?: Record<string, unknown>) {
   const [data, setData] = useState<T | null>(null);

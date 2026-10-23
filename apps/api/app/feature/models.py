@@ -65,6 +65,7 @@ class Counterparty(Base):
     default_category_code: Mapped[str | None] = mapped_column(ForeignKey(f"{SCHEMA}.mgmt_categories.code"))
     payment_rule: Mapped[str] = mapped_column(Text, default="next_month_30")
     keywords: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    aliases: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)  # 同統編的其他寫法（發票辨識誤差）
     issues_invoice: Mapped[bool] = mapped_column(Boolean, default=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

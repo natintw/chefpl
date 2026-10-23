@@ -81,7 +81,9 @@ class PostingService:
             with self.s.begin_nested():
                 self.docs.add(doc)
         except IntegrityError as e:
-            raise DuplicateSource(f"這個來源已經入帳過（{inp.source_kind}:{inp.source_ref}）") from e
+            if "documents_unique_source" in str(e.orig):
+                raise DuplicateSource(f"這個來源已經入帳過（{inp.source_kind}:{inp.source_ref}）") from e
+            raise
 
         self._after_create(doc, inp, actor)
         return doc
@@ -100,7 +102,7 @@ class PostingService:
         return None
 
     def ensure_counterparty(self, name: str, tax_id: str | None, company_id: str, actor: str,
-                            roles: list[str] | None = None) -> Counterparty:
+                            roles: list[str] | None = None, review: bool = True) -> Counterparty:
         cp = self.catalog.find_counterparty(name, tax_id)
         if cp:
             return cp
@@ -109,8 +111,9 @@ class PostingService:
                                            is_intercompany=group is not None,
                                            intercompany_company_id=group.id if group else None,
                                            payment_rule=self.cfg.default_payment_rule)
-        self.ops.open_review("new_counterparty", company_id, f"counterparty:{cp.id}",
-                             {"name": name, "tax_id": tax_id, "created_by": actor})
+        if review:
+            self.ops.open_review("new_counterparty", company_id, f"counterparty:{cp.id}",
+                                 {"name": name, "tax_id": tax_id, "created_by": actor})
         return cp
 
     def _validate(self, inp: DocumentInput, cp: Counterparty | None) -> None:

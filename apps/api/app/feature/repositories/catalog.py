@@ -33,6 +33,13 @@ class CatalogRepository:
     def counterparty_by_tax_id(self, tax_id: str) -> Counterparty | None:
         return self.s.scalar(select(Counterparty).where(Counterparty.tax_id == tax_id))
 
+    def counterparty_by_masked(self, id_masked: str, name: str | None) -> Counterparty | None:
+        """個人廠商：遮蔽後的身分證字號不唯一，要再加上姓名。"""
+        stmt = select(Counterparty).where(Counterparty.id_masked == id_masked)
+        if name:
+            stmt = stmt.where(Counterparty.name == name)
+        return self.s.scalars(stmt).first()
+
     def counterparty_by_name(self, name: str) -> Counterparty | None:
         return self.s.scalar(select(Counterparty).where(Counterparty.name == name))
 
