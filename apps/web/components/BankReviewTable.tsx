@@ -222,7 +222,7 @@ export function BankReviewTable({ items, onDone, renderDetail }: {
         </div>
       )}
 
-      <div className="tbl-wrap" style={{ maxHeight: 560, overflow: "auto" }}>
+      <div className="tbl-wrap" style={open ? { overflow: "auto" } : { maxHeight: 560, overflow: "auto" }}>
         <table>
           <thead style={{ position: "sticky", top: 0, zIndex: 1 }}><tr>
             <th style={{ width: 36 }}><input type="checkbox" aria-label="全選目前清單" checked={allPicked} disabled={!shown.length}

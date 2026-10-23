@@ -171,13 +171,22 @@ def _doc_filters(user: UserPrincipal, company_id: str | None, store_id: str | No
 def list_documents(doc_type: str | None = None, company_id: str | None = None, store_id: str | None = None,
                    period: str | None = None, settle_status: str | None = None, source_kind: str | None = None,
                    due_before: date | None = None, q: str | None = None, page: int = Query(1, ge=1),
-                   page_size: int = Query(50, le=200), user: UserPrincipal = Depends(need("doc.view")),
+                   page_size: int = Query(50, le=500), with_lines: bool = False,
+                   user: UserPrincipal = Depends(need("doc.view")),
                    s: Session = Depends(get_ledger_session, scope="function")):
+    """with_lines=true 時每張單據附上明細行（手動核對要逐張看內容用）。"""
     f = _doc_filters(user, company_id, store_id, doc_type=doc_type, period=period, settle_status=settle_status,
                      source_kind=source_kind, due_before=due_before, q=q)
     rows, total = DocumentRepository(s).list(page=page, page_size=page_size, **f)
-    return {"items": [ser.document(d, detail=False) for d in rows], "total": total, "page": page,
-            "page_size": page_size}
+    items = []
+    for d in rows:
+        out = ser.document(d, detail=False)
+        if with_lines:
+            out["lines"] = [{"line_no": l.line_no, "period_key": l.period_key, "store_id": l.store_id,
+                             "category_code": l.category_code, "amount": l.amount, "description": l.description,
+                             "is_intercompany": l.is_intercompany} for l in d.lines]
+        items.append(out)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/documents/export")

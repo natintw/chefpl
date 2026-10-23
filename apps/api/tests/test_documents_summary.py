@@ -32,3 +32,13 @@ def test_summary_counts_everything_and_filters(client):
     p3 = client.get("/api/v1/documents", params={"doc_type": "payable", "period": "2026-08", "page_size": 2,
                                                  "page": 3}).json()
     assert len(p3["items"]) == 1
+
+
+def test_list_with_lines_for_manual_match(client):
+    from tests.helpers import payable
+    payable(client, company="comp-2", store="store-ys-01", period="2026-08", amount=10_500, vendor="金格肉品", invoice_no="WL00000001")
+    q = {"doc_type": "payable", "company_id": "comp-2", "q": "金格", "settle_status": "open,partial"}
+    plain = client.get("/api/v1/documents", params=q).json()["items"]
+    assert plain and "lines" not in plain[0]
+    full = client.get("/api/v1/documents", params={**q, "with_lines": "true"}).json()["items"]
+    assert full[0]["lines"][0]["period_key"] == "2026-08" and full[0]["lines"][0]["store_id"] == "store-ys-01"

@@ -191,6 +191,7 @@ function Card({ it, onDone, embedded }: { it: ReviewItem; onDone: () => void; em
       {it.kind === "bank_only" && manual && bank?.company_id && (
         <ManualMatch reviewId={it.id} bank={bank as never}
                      preselect={(p.suggestion?.documents || []).map((d: { document_id: string }) => d.document_id)}
+                     hint={p.counterparty_hint || p.suggestion?.counterparty_name}
                      onDone={(msg) => { toast(msg); onDone(); }} />
       )}
     </article>
