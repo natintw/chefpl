@@ -162,3 +162,15 @@ def test_deleted_txn_withdraws_review_and_voids_bank_only_document(client, svc_h
     # 重新匯入：又進待確認（不是 duplicate）
     again = _send(client, svc_headers, _txn("F1", 30, bank_memo="手續費"))
     assert again["review"] == 1, again
+
+
+def test_incoming_matches_advance_receipt_on_newly_listed_account(client, svc_headers):
+    """預收（例：團購訂金）銀行入帳也會對上；楊師傅國泰 2611（acc-3312）在帳戶主檔裡。"""
+    r = client.post("/api/v1/documents", json={
+        "doc_type": "advance_receipt", "company_id": "comp-2", "doc_date": "2026-10-01", "counterparty_name": "團購客戶",
+        "settle_amount": 54960, "tax_amount": 0, "lines": [], "expected_delivery_date": "2026-11-15"})
+    assert r.status_code == 201, r.text
+    res = _send(client, svc_headers, _txn("ADV1", 54960, cash_account_id="acc-3312", txn_date="2026-10-02",
+                                          direction="in", bank_memo="跨行存入"))
+    assert res["matched"] == 1, res
+    assert client.get(f"/api/v1/documents/{r.json()['id']}").json()["settle_status"] == "settled"

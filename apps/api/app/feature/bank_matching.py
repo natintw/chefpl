@@ -12,7 +12,7 @@
 對到就把每張單據標成已付（同一個 cash_txn_id、bank_amount＝匯款金額）；名稱比對成功時記住對方帳號。
 認不出廠商、或金額湊不出唯一組合 → 進「待確認」（銀行有、單據無），能猜到的組合放在建議裡讓會計一鍵確認。
 
-收入（direction=in）：同一法人的未結清應收裡，金額完全相同且只有一張 → 標成已收；否則進待確認。
+收入（direction=in）：同一法人的未結清應收與預收裡，金額完全相同且只有一張 → 標成已收；否則進待確認。
 
 刪除（event=bank_transactions.deleted）：現金流系統把匯錯的交易刪掉時呼叫。撤回這筆交易造成的一切：
   付款配對取消（單據回到未付）、由這筆交易建立的單據作廢（已關帳的月份不動，改開待確認）、還沒處理的待確認撤下。
@@ -88,12 +88,12 @@ class BankMatchService:
         amount = int(it["amount"])
 
         if it["direction"] == "in":
-            docs = self._open_docs(company_ids, "receivable", None, txn_date)
+            docs = self._open_docs(company_ids, ("receivable", "advance_receipt"), None, txn_date)
             hits = [d for d in docs if _outstanding(d) == amount]
             if len(hits) == 1:
                 return self._apply(it, acct.company_id, hits, None, "amount", actor)
             return self._review(it, acct.company_id, None, hits[:5] if len(hits) > 1 else [],
-                                "金額相同的應收不只一張" if len(hits) > 1 else "找不到對應的應收")
+                                "金額相同的應收／預收不只一張" if len(hits) > 1 else "找不到金額相同的應收或預收")
 
         vendors, how = self._identify_vendor(it)
         tried = []
@@ -206,9 +206,11 @@ class BankMatchService:
             cp.bank_accounts = [*(cp.bank_accounts or []), key]
 
     # ------------------------------------------------------------------ 找單據組合
-    def _open_docs(self, company_ids: set[str], doc_type: str, cp_id: uuid.UUID | None, txn_date: date) -> list[Document]:
+    def _open_docs(self, company_ids: set[str], doc_type: str | tuple[str, ...], cp_id: uuid.UUID | None,
+                   txn_date: date) -> list[Document]:
+        types = (doc_type,) if isinstance(doc_type, str) else doc_type
         stmt = select(Document).where(
-            Document.doc_type == doc_type, Document.status.in_(("posted", "draft")),
+            Document.doc_type.in_(types), Document.status.in_(("posted", "draft")),
             Document.settle_status.in_(("open", "partial")), Document.company_id.in_(company_ids))
         if cp_id is not None:
             stmt = stmt.where(Document.counterparty_id == cp_id)
