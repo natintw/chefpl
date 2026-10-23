@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.feature.common import SETTLEABLE_TYPES
 from app.feature.models import Document, Settlement
 from app.feature.posting import PostingService
+from app.feature.bank_accounts import refresh_overlay
 from app.seams.company import get_directory
 
 
@@ -59,6 +60,7 @@ class SettlementService:
         self.docs, self.ops = self.posting.docs, self.posting.ops
         self.dir = get_directory()
         self.cfg = get_settings()
+        refresh_overlay(session)  # 銀行帳戶以現金流系統送來的為準
 
     # ------------------------------------------------------------------ open-items
     def open_items(self, *, company_id: str | None, doc_types: list[str] | None, due_before: date | None,

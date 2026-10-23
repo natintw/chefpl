@@ -68,7 +68,12 @@ class _Helpers:
         return next((s for s in self.list_stores() if s.id == store_id), None)
 
     def get_bank_account(self: CompanyDirectory, account_id: str) -> BankAccount | None:
-        return next((a for a in self.list_bank_accounts() if a.id == account_id), None)
+        hit = getattr(self, "_bank_overlay", {}).get(account_id)
+        return hit or next((a for a in self.list_bank_accounts() if a.id == account_id), None)
+
+    def set_bank_overlay(self, accounts: list[BankAccount]) -> None:
+        """現金流系統送來的帳戶資料（以它為準），蓋過 fixtures／主檔 API 的同一個帳戶。"""
+        self._bank_overlay = {a.id: a for a in accounts}  # type: ignore[attr-defined]
 
     def legal_entity(self: CompanyDirectory, company_id: str) -> str:
         """分公司與總公司是同一個法人：回傳最上層公司 ID。"""

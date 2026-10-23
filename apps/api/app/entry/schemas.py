@@ -199,6 +199,11 @@ class BankTxnIn(BaseModel):
     bank_note: str | None = None
     counterparty_name: str | None = None
     counterparty_account_no: str | None = Field(None, description="對方帳號，可遮蔽，至少保留末 5 碼")
+    # 帳戶資料（以現金流系統為準；有帶就更新帳務系統的帳戶主檔）
+    cash_account_company_id: str | None = None
+    cash_account_bank: str | None = None
+    cash_account_name: str | None = None
+    cash_account_last4: str | None = None
 
 
 class BankTxnRef(BaseModel):

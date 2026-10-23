@@ -174,3 +174,18 @@ def test_incoming_matches_advance_receipt_on_newly_listed_account(client, svc_he
                                           direction="in", bank_memo="跨行存入"))
     assert res["matched"] == 1, res
     assert client.get(f"/api/v1/documents/{r.json()['id']}").json()["settle_status"] == "settled"
+
+
+def test_account_info_from_cashflow_is_source_of_truth(client, svc_headers):
+    """現金流新增的帳戶（帳務系統 fixtures 沒有）只要帶上所屬公司就認得；所屬公司不在主檔則拒絕。"""
+    r = client.post("/api/v1/documents", json={
+        "doc_type": "receivable", "company_id": "comp-2", "doc_date": "2026-10-01", "counterparty_name": "團購客戶",
+        "settle_amount": 12345, "tax_amount": 588,
+        "lines": [{"period_key": "2026-10", "category_code": "R04", "amount": 11757, "store_id": "store-ys-01"}]})
+    assert r.status_code == 201, r.text
+    acct = {"cash_account_id": "acc-new-9999", "cash_account_company_id": "comp-2", "cash_account_bank": "台新",
+            "cash_account_name": "楊師傅台新9999", "cash_account_last4": "9999"}
+    res = _send(client, svc_headers, _txn("NEW1", 12345, direction="in", txn_date="2026-10-02", **acct))
+    assert res["matched"] == 1, res
+    bad = _send(client, svc_headers, _txn("NEW2", 100, **{**acct, "cash_account_id": "acc-x", "cash_account_company_id": "comp-nope"}))
+    assert bad["rejected"] == 1 and "不在集團主檔" in bad["results"][0]["message"]

@@ -67,6 +67,8 @@ POST {LEDGER_WEBHOOK_URL}
 | `bank_note` | | 備註 |
 | `counterparty_name` | | 對方戶名（被銀行截短也沒關係） |
 | `counterparty_account_no` | | 對方帳號；可以遮蔽，但**至少保留末 5 碼**。帳務系統用名稱比對成功一次後會記住，下次直接用帳號認 |
+| `cash_account_company_id` | 建議 | 這個帳戶屬於哪家公司（集團主檔的公司 ID）。**帳戶以現金流系統為準**：有帶就更新帳務系統的帳戶主檔，現金流新增或改了所屬公司的帳戶不必再通知帳務系統 |
+| `cash_account_bank`、`cash_account_name`、`cash_account_last4` | | 帳戶的銀行、名稱、末四碼（顯示用） |
 
 ## 4. 簽章
 
@@ -221,7 +223,7 @@ LEDGER_SIGNING_SECRET=<簽章密鑰>
 
 ## 8. 注意事項
 
-- 銀行帳戶主檔：帳務系統用 `cash_account_id` 判斷公司，所以 ChefCashFlow 的每個帳戶都要在帳務系統的帳戶主檔裡（目前博仁餐飲、博竑漢神分公司還沒有帳戶）。
+- 銀行帳戶主檔：以現金流系統為準。交易帶 `cash_account_company_id` 時，帳務系統自動記下或更新這個帳戶；沒帶時才看帳務系統內建的帳戶清單。所屬公司不在集團主檔的帳戶會被拒絕。
 - 比對只用「到期日在交易日 20 天內」的未付單據，避免把很久以後才到期的單據提早結清。
 - 金額必須剛好相符才自動結清；手續費另扣、少付或多付都會進待確認。
 - 交易本身沒錯、只是自動結清到錯的單據：在 ChefCashFlow 取消配對後，呼叫既有的 `POST /integration/v1/settlements`（`action: "reverse"`）取消（`INTEGRATION_CLIENTS` 的 `allow` 要加上 `"POST /integration/v1/settlements"`，簽章方式相同），或請會計在帳務系統處理。

@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.feature.bank_accounts import upsert_from_items
 from app.feature.models import Counterparty, Document, ReviewItem, Settlement
 from app.feature.settlement import SettlementService
 from app.seams.company import get_directory
@@ -68,8 +69,12 @@ class BankMatchService:
     def receive(self, items: list[dict[str, Any]], actor: str) -> dict[str, Any]:
         self._vendors = [cp for cp in self.s.scalars(select(Counterparty).where(Counterparty.is_active.is_(True)))]
         results, counts = [], {"matched": 0, "review": 0, "duplicate": 0, "rejected": 0}
+        bad_accounts = upsert_from_items(self.s, items)  # 帳戶資料以現金流系統為準
         for it in items:
-            r = self._one(it, actor)
+            if it["cash_account_id"] in bad_accounts:
+                r = {"cash_txn_id": it["cash_txn_id"], "status": "rejected", "message": bad_accounts[it["cash_account_id"]]}
+            else:
+                r = self._one(it, actor)
             counts[r["status"]] += 1
             results.append(r)
         self.s.flush()

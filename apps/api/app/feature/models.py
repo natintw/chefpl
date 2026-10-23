@@ -144,6 +144,18 @@ class DocumentLine(Base):
     document: Mapped[Document] = relationship(back_populates="lines")
 
 
+class BankAccountRow(Base):
+    """現金流系統的銀行帳戶（webhook 帶來的，以現金流為準）。"""
+    __tablename__ = "bank_accounts"
+    __table_args__ = {"schema": SCHEMA}
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    company_id: Mapped[str] = mapped_column(Text)
+    bank_name: Mapped[str | None] = mapped_column(Text)
+    alias: Mapped[str | None] = mapped_column(Text)
+    last4: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Settlement(Base):
     __tablename__ = "settlements"
     __table_args__ = {"schema": SCHEMA}
