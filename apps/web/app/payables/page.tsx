@@ -7,6 +7,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { DocumentDrawer } from "@/components/DocumentDrawer";
+import { DownloadButton } from "@/components/DownloadButton";
 import { PageHeader } from "@/components/Shell";
 import { PeriodPicker, ScopePicker, useQuery } from "@/components/filters";
 import { useDirectory } from "@/components/directory";
@@ -61,6 +62,8 @@ export default function PayablesPage() {
       <PageHeader crumb="帳務" title={`${TYPES[type]}帳款`} sub="銀行付款由現金流系統核對銀行簿子後自動回寫；現金付的，勾選後按「現金付款」。">
         {type !== "advance_receipt" && <PeriodPicker />}
         <ScopePicker />
+        <DownloadButton path="/documents/export" params={filters}
+                        filename={`${q.store ? storeName(q.store) : q.company ? companyName(q.company) : "集團"}_${TYPES[type]}帳款_${filters.period || "全部"}.xlsx`} />
         <Link className="btn pri" href={q.keep("/documents/new")}>新增</Link>
       </PageHeader>
 

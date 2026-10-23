@@ -2,6 +2,7 @@
 /** S2 損益表：依月份比較或依門市並列；點數字下鑽到明細與單據。資料：/pl/statement、/pl/drilldown。 */
 import { useMemo, useState } from "react";
 import { DocumentDrawer } from "@/components/DocumentDrawer";
+import { DownloadButton } from "@/components/DownloadButton";
 import { PageHeader } from "@/components/Shell";
 import { PeriodPicker, ScopePicker, useQuery } from "@/components/filters";
 import { useDirectory } from "@/components/directory";
@@ -40,6 +41,8 @@ export default function PLPage() {
           <button aria-pressed={mode === "month"} onClick={() => q.set({ cols: null })}>依月份</button>
           <button aria-pressed={mode === "store"} onClick={() => q.set({ cols: "store" })}>依門市</button>
         </div>
+        <DownloadButton path="/pl/statement/export" params={params}
+                        filename={`${scopeTitle}_損益表_${q.period}${mode === "month" ? "_月比較" : ""}.xlsx`} />
       </PageHeader>
 
       {st.error && <ErrorBox error={st.error} onRetry={st.reload} />}

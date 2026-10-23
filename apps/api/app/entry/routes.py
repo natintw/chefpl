@@ -99,6 +99,42 @@ def pl_statement(period_from: str = Query(pattern=PERIOD_PATTERN), period_to: st
                                       eliminate_intercompany=eliminate_intercompany)
 
 
+def _scope_label(company_id: str | None, store_id: str | None) -> str:
+    d = get_directory()
+    if store_id == "unallocated":
+        c = d.get_company(company_id) if company_id else None
+        return f"{c.name if c else ''}公司層級（未分攤）"
+    if store_id:
+        st = d.get_store(store_id)
+        return st.name if st else store_id
+    if company_id:
+        c = d.get_company(company_id)
+        return c.name if c else company_id
+    return "鄧師傅餐飲集團"
+
+
+def _xlsx(data: bytes, filename: str) -> Response:
+    from urllib.parse import quote
+    return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"})
+
+
+@router.get("/pl/statement/export")
+def pl_statement_export(period_from: str = Query(pattern=PERIOD_PATTERN), period_to: str = Query(pattern=PERIOD_PATTERN),
+                        company_id: str | None = None, store_id: str | None = None,
+                        columns: str = Query("store", pattern="^(store|month|company)$"),
+                        user: UserPrincipal = Depends(need("pl.view")), s: Session = Depends(get_ledger_session, scope="function")):
+    """損益表下載：與畫面同樣的列與欄，第二頁是組成數字的每筆明細。"""
+    from app.feature.exports import statement_xlsx
+    st = pl_statement(period_from=period_from, period_to=period_to, company_id=company_id, store_id=store_id,
+                      columns=columns, eliminate_intercompany=None, user=user, s=s)
+    cids = ReportService(s)._company_ids(user.scope, company_id)
+    label = _scope_label(company_id, store_id)
+    data = statement_xlsx(s, st, scope_label=label, mode="month" if columns == "month" else "store",
+                          company_ids=cids, store_id=store_id)
+    return _xlsx(data, f"{label}_損益表_{period_to}.xlsx")
+
+
 @router.get("/pl/drilldown")
 def pl_drilldown(period: str = Query(pattern=PERIOD_PATTERN), company_id: str | None = None, store_id: str | None = None,
                  category_code: str | None = None, pl_section: str | None = None, page: int = 1,
@@ -142,6 +178,22 @@ def list_documents(doc_type: str | None = None, company_id: str | None = None, s
     rows, total = DocumentRepository(s).list(page=page, page_size=page_size, **f)
     return {"items": [ser.document(d, detail=False) for d in rows], "total": total, "page": page,
             "page_size": page_size}
+
+
+@router.get("/documents/export")
+def documents_export(doc_type: str | None = None, company_id: str | None = None, store_id: str | None = None,
+                     period: str | None = None, settle_status: str | None = None, source_kind: str | None = None,
+                     q: str | None = None, user: UserPrincipal = Depends(need("doc.view")),
+                     s: Session = Depends(get_ledger_session, scope="function")):
+    """應付／應收／預收下載：與清單同樣的篩選，不分頁（第二頁是明細）。"""
+    from app.feature.exports import DOC_TYPE, documents_xlsx
+    f = _doc_filters(user, company_id, store_id, doc_type=doc_type, period=period, settle_status=settle_status,
+                     source_kind=source_kind, q=q)
+    rows, _ = DocumentRepository(s).list(page=1, page_size=20000, **f)
+    names = {c.code: c.name for c in CatalogRepository(s).categories.values()}
+    label = _scope_label(company_id, store_id)
+    data = documents_xlsx(rows, doc_type=doc_type, scope_label=label, period=period, category_names=names)
+    return _xlsx(data, f"{label}_{DOC_TYPE.get(doc_type or '', '單據')}帳款_{period or '全部'}.xlsx")
 
 
 @router.get("/documents/summary")
