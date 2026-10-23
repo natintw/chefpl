@@ -11,11 +11,12 @@ from sqlalchemy.orm import Session
 from app.db import get_ledger_session
 from app.entry import serializers as ser
 from app.entry.deps import current_user, need
-from app.entry.schemas import (AccrualBatchIn, AccrualTemplateIn, CloseIn, CounterpartyIn, CounterpartyPatch,
+from app.entry.schemas import (CashPaymentIn, AccrualBatchIn, AccrualTemplateIn, CloseIn, CounterpartyIn, CounterpartyPatch,
                                DocumentCreate, DocumentPatch, LinkAccrualIn, RecognizeIn, RecurringIn, ReopenIn,
                                ResolveIn, RuleIn, VoidIn)
 from app.errors import Forbidden, NotFound, ValidationFailed
 from app.feature.accruals import AccrualService, AdvanceService
+from app.feature.cash_payment import CashPaymentService
 from app.feature.common import LineInput
 from app.feature.imports.parsers import looks_like_invoice_summary
 from app.feature.imports.service import ImportService
@@ -190,6 +191,25 @@ def void_document(doc_id: uuid.UUID, body: VoidIn, user: UserPrincipal = Depends
                   s: Session = Depends(get_ledger_session, scope="function")):
     _doc_or_404(s, user, doc_id)
     return ser.document(PostingService(s).void(doc_id, body.reason, user.actor))
+
+
+@router.post("/cash-payments", status_code=201)
+def create_cash_payment(body: CashPaymentIn, user: UserPrincipal = Depends(need("doc.edit")),
+                        s: Session = Depends(get_ledger_session, scope="function")):
+    """應付用現金付掉：選的單據標成已付（不影響損益，只改已付／未付）。"""
+    for raw in body.document_ids:
+        try:
+            _doc_or_404(s, user, uuid.UUID(raw))
+        except ValueError:
+            raise ValidationFailed(f"單據 ID 格式錯誤：{raw}")
+    return CashPaymentService(s).pay(body.document_ids, body.paid_date, body.source, user.actor,
+                                     note=body.note, amount=body.amount)
+
+
+@router.post("/cash-payments/{payment_id}/reverse")
+def reverse_cash_payment(payment_id: str, user: UserPrincipal = Depends(need("doc.edit")),
+                         s: Session = Depends(get_ledger_session, scope="function")):
+    return CashPaymentService(s).reverse(payment_id, user.actor)
 
 
 @router.post("/documents/{doc_id}/link-accrual")

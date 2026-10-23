@@ -157,6 +157,8 @@ class Settlement(Base):
     match_level: Mapped[str] = mapped_column(Text)
     reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(Text)
     document: Mapped[Document] = relationship(back_populates="settlements")
 
 

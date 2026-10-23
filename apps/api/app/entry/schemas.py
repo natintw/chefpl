@@ -219,3 +219,12 @@ class BankTxnWebhookIn(BaseModel):
 
 class BankOnlyIn(BaseModel):
     items: list[BankOnlyItemIn] = Field(min_length=1, max_length=500)
+
+
+class CashPaymentIn(BaseModel):
+    """現金付款：選好的單據標成已付。來源：petty_cash 零用金、store_cash 門市收銀、advance 老闆／員工代墊。"""
+    document_ids: list[str] = Field(min_length=1, max_length=200)
+    paid_date: date
+    source: Literal["petty_cash", "store_cash", "advance"] = "petty_cash"
+    note: str | None = Field(default=None, max_length=200)
+    amount: int | None = Field(default=None, gt=0)

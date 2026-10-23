@@ -1,13 +1,26 @@
 "use client";
 /** 單據側欄：明細、結清紀錄、來源。損益表下鑽、應付帳款、待確認共用。 */
-import { useApi } from "@/lib/api";
+import { useState } from "react";
+import { apiSend, useApi } from "@/lib/api";
 import { money, settleLabel, SOURCE_LABEL } from "@/lib/format";
 import type { Doc } from "@/lib/types";
 import { useDirectory } from "./directory";
-import { ErrorBox, Skeleton, Tag } from "./ui";
+import { ErrorBox, Skeleton, Tag, useToast } from "./ui";
 
-export function DocumentDrawer({ id, onClose }: { id: string; onClose: () => void }) {
+const CASH_SOURCE: Record<string, string> = { "cash:petty_cash": "零用金", "cash:store_cash": "門市收銀", "cash:advance": "老闆／員工代墊" };
+
+export function DocumentDrawer({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged?: () => void }) {
   const { data: d, error, loading, reload } = useApi<Doc>(`/documents/${id}`);
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  async function undoCash(paymentId: string) {
+    setBusy(true);
+    try {
+      const r = await apiSend<{ reopened_documents: string[] }>("POST", `/cash-payments/${paymentId}/reverse`, {});
+      toast(r.reopened_documents.length > 1 ? `已取消這筆現金付款（${r.reopened_documents.length} 張單據一起回到未付）` : "已取消這筆現金付款");
+      reload(); onChanged?.();
+    } catch (e) { toast((e as Error).message || "取消失敗", "error"); } finally { setBusy(false); }
+  }
   const { storeName, categoryName, companyName } = useDirectory();
   return (
     <aside className="card aside drawer" aria-label="單據明細">
@@ -54,11 +67,16 @@ export function DocumentDrawer({ id, onClose }: { id: string; onClose: () => voi
           </div>
           {!!d.settlements?.length && (
             <div>
-              <div className="small" style={{ marginBottom: 4 }}>結清紀錄（來自現金流系統）</div>
+              <div className="small" style={{ marginBottom: 4 }}>結清紀錄</div>
               {d.settlements.map((s, i) => (
-                <div key={i} className="small" style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
-                  <span>{s.txn_date}・{s.cash_account_id}{s.reversed ? "（已取消）" : ""}</span>
-                  <span className="num">{money(s.amount)}</span>
+                <div key={i} className="small" style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "4px 0" }}>
+                  <span>{s.txn_date}・{s.kind === "cash" ? `現金（${CASH_SOURCE[s.cash_account_id] || "現金"}）` : `銀行 ${s.cash_account_id}`}
+                    {s.reversed ? "（已取消）" : ""}{s.note ? <div className="sub">{s.note}</div> : null}</span>
+                  <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <span className="num">{money(s.amount)}</span>
+                    {s.kind === "cash" && !s.reversed &&
+                      <button className="btn sm" disabled={busy} onClick={() => undoCash(s.cash_txn_id)}>取消</button>}
+                  </span>
                 </div>
               ))}
             </div>
