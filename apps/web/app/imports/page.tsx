@@ -21,6 +21,7 @@ type Committed = { batch_id: string; created: number; drafts_for_review: number;
 const KINDS = {
   invoice_summary: { label: "發票彙總表", hint: "發票系統匯出的「廠商應付彙總表」，一個檔案包含所有公司，依「公司統編」自動分到各公司、依「入帳月份」記帳。重複匯入同一列會自動略過，金額有變會以新的取代。" },
   ap_sheet: { label: "應付帳款表", hint: "每月的進貨與費用總表（Excel）。同月份重新上傳會取代上一次的批次。" },
+  pos_daily: { label: "POS 營業報表", hint: "POS 下載的每日營業報表（Sales Summary＋內用＋外帶）。每天、每種收款方式（現金、信用卡、LINE Pay…）各記一張應收，營收依內用／外帶入損益（未稅）；現金存入銀行時自動對上，刷卡、LINE Pay 撥款在待確認用手動核對、差額記手續費。同一天重新匯入金額相同會略過。" },
   payroll: { label: "薪資表", hint: "每門市一列：薪資、勞健保、勞退。同公司同月同門市重新匯入會取代舊的。" },
 } as const;
 type K = keyof typeof KINDS;
@@ -94,6 +95,13 @@ export default function ImportsPage() {
               {dir.companies.map((c) => <option key={c.id} value={c.id}>{c.parent_company_id ? "　└ " : ""}{c.name}</option>)}
             </select></label>}
           <label className="f"><span>{kind === "invoice_summary" ? "這次匯入的主要月份" : "月份"}</span><input type="month" value={period} onChange={(e) => setPeriod(e.target.value)} /></label>
+          {kind === "pos_daily" && (
+            <label className="f"><span>門市（必選）</span>
+              <select value={store} onChange={(e) => setStore(e.target.value)}>
+                <option value="">選擇門市</option>
+                {stores.map((s) => <option key={s.id} value={s.id}>{s.code} {s.name}</option>)}
+              </select></label>
+          )}
           {kind === "ap_sheet" && (
             <label className="f"><span>門市（選填）</span>
               <select value={store} onChange={(e) => setStore(e.target.value)}>
@@ -104,8 +112,8 @@ export default function ImportsPage() {
           <label className="f"><span>檔案（.xlsx／.csv）</span>
             <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={(e) => { setFile(e.target.files?.[0] || null); setBatch(null); setDone(null); }} /></label>
           <FieldErrors error={!batch ? err : null} />
-          <button className="btn pri" disabled={busy || !file || !companyId} onClick={upload}>{busy && !batch ? "解析中…" : "上傳並預覽"}</button>
-          {kind !== "invoice_summary" && <p className="small" style={{ margin: 0 }}>【待確認】這個格式還是示意欄位；拿到真實檔案後會調整。</p>}
+          <button className="btn pri" disabled={busy || !file || !companyId || (kind === "pos_daily" && !store)} onClick={upload}>{busy && !batch ? "解析中…" : "上傳並預覽"}</button>
+          {(kind === "ap_sheet" || kind === "payroll") && <p className="small" style={{ margin: 0 }}>【待確認】這個格式還是示意欄位；拿到真實檔案後會調整。</p>}
         </section>
 
         <section className="card grow" aria-label="預覽" style={{ minWidth: 0 }}>
@@ -121,7 +129,7 @@ export default function ImportsPage() {
                 <div><div className="k">列數</div><div className="num">{batch.row_count}</div></div>
                 <div><div className="k">合計（含稅）</div><div className="num">{money(batch.total_amount)}</div></div>
                 <div><div className="k">要人工分類</div><div className="num">{drafts}</div></div>
-                {batch.kind === "invoice_summary"
+                {batch.kind === "invoice_summary" || batch.kind === "pos_daily"
                   ? <div><div className="k">已匯入過・金額變了</div><div className="num">{skips}・{replaces}</div></div>
                   : <div><div className="k">提醒</div><div className="num">{batch.warnings.length}</div></div>}
               </div>

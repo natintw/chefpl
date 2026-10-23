@@ -21,7 +21,7 @@ from app.errors import HasErrors, NotFound, ValidationFailed
 from app.feature.classification import classify
 from app.feature.common import (PERIOD_RE, DocumentInput, LineInput, last_day, months_in_memo, split_evenly,
                                 untaxed)
-from app.feature.imports.parsers import PARSERS, ParsedRow, looks_like_invoice_summary
+from app.feature.imports.parsers import PARSERS, ParsedRow, looks_like_invoice_summary, looks_like_pos_daily
 from app.feature.models import Counterparty, ImportBatch
 from app.feature.posting import PostingService
 from app.feature.review import _input_from_json, input_to_json
@@ -51,8 +51,15 @@ class ImportService:
             raise ValidationFailed("月份格式為 YYYY-MM")
         if kind == "ap_sheet" and looks_like_invoice_summary(data):
             kind = "invoice_summary"  # 選了應付表但上傳的是發票系統的彙總表：自動切換
+        if kind in ("ap_sheet", "payroll") and looks_like_pos_daily(data):
+            kind = "pos_daily"  # 上傳的是 POS 每日營業報表：自動切換
         if kind == "invoice_summary":
             company_id = MULTI_COMPANY
+        elif kind == "pos_daily":
+            st = self.dir.get_store(store_id or "")
+            if st is None:
+                raise ValidationFailed("POS 營業報表要選是哪一家門市")
+            company_id = st.company_id
         elif self.dir.get_company(company_id) is None:
             raise ValidationFailed("公司不存在")
         if len(data) > self.cfg.max_upload_mb * 1024 * 1024:
@@ -86,7 +93,8 @@ class ImportService:
                 except ValidationFailed:
                     pass
             self._prefetch_existing(refs)
-        builder = {"ap_sheet": self._ap_row, "payroll": self._payroll_row, "invoice_summary": self._summary_row}[kind]
+        builder = {"ap_sheet": self._ap_row, "payroll": self._payroll_row, "invoice_summary": self._summary_row,
+                   "pos_daily": self._pos_row}[kind]
         parsed, errors, warnings = [], list(result.errors), list(result.warnings)
         if store_warning:
             warnings.insert(0, store_warning)
@@ -325,6 +333,8 @@ class ImportService:
 
         if batch.kind == "invoice_summary":
             return self._commit_summary(batch, actor)
+        if batch.kind == "pos_daily":
+            return self._commit_pos(batch, actor)
         superseded = []
         for old in self.ops.committed_batches(batch.kind, batch.company_id, batch.period_key):
             old_docs, _ = self.docs.list(company_ids={batch.company_id}, page_size=10000)
@@ -403,6 +413,53 @@ class ImportService:
         return {"batch_id": str(batch.id), "created": created, "drafts_for_review": drafts, "replaced": replaced,
                 "skipped": skipped, "total_amount": batch.total_amount, "superseded_batches": []}
 
+    # ------------------------------------------------------------------ POS 每日營業報表
+    def _pos_row(self, r: ParsedRow, batch: ImportBatch, store_id: str | None, actor: str):
+        """一天＋一種收款方式＝一張應收：營收照內用（R01）、外帶（R02）入損益（未稅），
+        收款方式各自一張，銀行入帳時才對得上（現金存款＝當天現金；信用卡、LINE Pay 撥款扣手續費，手動核對記 E11）。"""
+        v = r.values
+        d: date = v["date"]
+        tender = POS_TENDERS.get(v["tender"], v["tender"])
+        cp = self.posting.ensure_counterparty(tender, None, batch.company_id, actor, roles=["customer"], review=False)
+        rate = self.cfg.tax_rate
+        lines = []
+        for code, amt, label in (("R01", v["dine_in"], "內用"), ("R02", v["takeout"], "外帶")):
+            if amt:
+                lines.append(LineInput(d.strftime("%Y-%m"), code, round(amt / (1 + rate)), store_id, f"{label}・{tender}"))
+        net = sum(ln.amount for ln in lines)
+        ref = f"pos:{store_id}:{d.isoformat()}:{v['tender']}"
+        prev = self.docs.get_by_source("pos", ref)
+        action = "create"
+        if prev is not None:
+            action = "skip" if prev.settle_amount == v["total"] else "replace"
+        inp = DocumentInput(
+            doc_type="receivable", company_id=batch.company_id, doc_date=d, source_kind="pos", source_ref=ref,
+            counterparty_id=cp.id, settle_amount=v["total"], tax_amount=v["total"] - net, has_invoice=True,
+            memo=f"{d.isoformat()} POS 營業額・{tender}", import_batch_id=batch.id, lines=lines)
+        return inp, {"vendor": tender, "action": action, "warnings": r.warnings}
+
+    def _commit_pos(self, batch: ImportBatch, actor: str) -> dict[str, Any]:
+        """同一天、同一種收款方式重新匯入：金額相同略過；不同則作廢舊的（已收款的不能取代）。"""
+        created = replaced = skipped = 0
+        for p in batch.parsed:
+            inp = _input_from_json(p["input"])
+            prev = self.docs.get_by_source("pos", inp.source_ref)
+            if prev is not None:
+                if prev.settle_amount == inp.settle_amount:
+                    skipped += 1
+                    continue
+                if prev.settled_amount:
+                    raise HasErrors(f"{inp.memo} 先前已匯入且已收款，金額卻不同（{prev.settle_amount:,} → {inp.settle_amount:,}），"
+                                    "請先在帳務系統取消那筆核對", [{"row": p["row"], "message": inp.source_ref}])
+                self.posting.void(prev.id, f"由批次 {batch.id} 取代（{prev.settle_amount:,} → {inp.settle_amount:,}）", actor)
+                replaced += 1
+            self.posting.create(inp, actor, bulk=True)
+            created += 1
+        self.s.flush()
+        batch.status, batch.committed_at = "committed", datetime.now(timezone.utc)
+        return {"batch_id": str(batch.id), "created": created, "drafts_for_review": 0, "replaced": replaced,
+                "skipped": skipped, "total_amount": batch.total_amount, "superseded_batches": []}
+
     def serialize(self, b: ImportBatch) -> dict[str, Any]:
         return {"id": str(b.id), "kind": b.kind, "company_id": b.company_id, "period": b.period_key,
                 "file_name": b.file_name, "status": b.status, "row_count": b.row_count,
@@ -412,6 +469,16 @@ class ImportService:
                              "settle_amount": p["input"]["settle_amount"], "lines": p["input"]["lines"],
                              "status": p["input"].get("status")} for p in b.parsed[:1000]]}
 
+
+# POS 收款方式 → 帳務系統的收款對象名稱（銀行入帳時看得懂是誰撥的款）
+POS_TENDERS = {
+    "現金": "門市現金（存入銀行）",
+    "信用卡(Global Payment TW)": "信用卡撥款（Global Payment）",
+    "LINE Pay(LINE Pay)": "LINE Pay 撥款",
+    "台灣pay": "台灣Pay 撥款",
+    "手刷信用卡": "手刷信用卡撥款",
+    "禮券": "禮券",
+}
 
 _STORE_SUFFIXES = ("分店", "門市", "店")
 

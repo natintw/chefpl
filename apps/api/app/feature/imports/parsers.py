@@ -285,4 +285,74 @@ def parse_payroll(data: bytes) -> ParseResult:
     return ParseResult(rows, errors, [])
 
 
-PARSERS = {"ap_sheet": parse_ap_sheet, "payroll": parse_payroll, "invoice_summary": parse_invoice_summary}
+# ---------------------------------------------------------------- POS 每日營業報表
+# POS 下載的「Sales Summary」：每天一列；「內用」「外帶」分頁各有每種收款方式的金額。
+POS_SHEETS = ("Sales Summary", "內用", "外帶")
+POS_OTHER_COLS = ("預訂單訂金", "預定單訂金退回", "禮券退款", "進位差異", "小費", "服務費", "送遞附加費")
+
+
+def looks_like_pos_daily(data: bytes) -> bool:
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        return all(n in wb.sheetnames for n in POS_SHEETS)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _pos_sheet(ws) -> tuple[dict[str, int], dict[str, int], list[tuple]]:
+    """回傳（欄名→欄位, 收款方式→金額欄位, 資料列）。收款方式在「日期」上一列，金額是名稱下方那欄右邊的 NT$。"""
+    rows = list(ws.iter_rows(values_only=True))
+    hi = next(i for i, r in enumerate(rows) if r and _norm(r[0]) == "日期")
+    header = [_norm(c) for c in rows[hi]]
+    above = rows[hi - 1] if hi > 0 else ()
+    cols = {h: i for i, h in enumerate(header) if h}
+    tenders: dict[str, int] = {}
+    for i, name in enumerate(above):
+        if name and i + 1 < len(header) and header[i + 1].upper() == "NT$":
+            tenders[str(name).strip()] = i + 1
+    data = [r for r in rows[hi + 1:] if r and r[0] and _to_date(str(r[0])[:10])]
+    return cols, tenders, data
+
+
+def parse_pos_daily(data: bytes) -> ParseResult:
+    """一列＝一天＋一種收款方式（現金、信用卡、LINE Pay…），金額拆成內用、外帶。"""
+    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    missing = [n for n in POS_SHEETS if n not in wb.sheetnames]
+    if missing:
+        return ParseResult([], [{"row": 0, "code": "MISSING_SHEET", "message": f"缺少分頁：{'、'.join(missing)}"}], [])
+    summary, dine, take = (_pos_sheet(wb[n]) for n in POS_SHEETS)
+    by_day: dict[date, dict[str, Any]] = {}
+    for label, (cols, tenders, rows) in (("dine", dine), ("take", take)):
+        for r in rows:
+            d = _to_date(str(r[0])[:10])
+            day = by_day.setdefault(d, {"dine": {}, "take": {}})
+            for t, ci in tenders.items():
+                day[label][t] = _to_int(r[ci]) or 0
+    out, warnings, errors = [], [], []
+    s_cols, s_tenders, s_rows = summary
+    for idx, r in enumerate(s_rows, start=1):
+        d = _to_date(str(r[0])[:10])
+        day = by_day.get(d, {"dine": {}, "take": {}})
+        others = {c: _to_int(r[s_cols[c]]) or 0 for c in POS_OTHER_COLS if c in s_cols}
+        nonzero = {k: v for k, v in others.items() if v}
+        row_w = [{"code": "POS_OTHER", "message": f"{d} 有 {'、'.join(f'{k} {v:,}' for k, v in nonzero.items())}，"
+                  "目前沒有入帳，請確認"}] if nonzero else []
+        for t, ci in s_tenders.items():
+            total = _to_int(r[ci]) or 0
+            if not total:
+                continue
+            dn, tk = day["dine"].get(t, 0), day["take"].get(t, 0)
+            w = list(row_w)
+            if dn + tk != total:
+                w.append({"code": "POS_SPLIT_MISMATCH", "message": f"{d} {t}：內用 {dn:,}＋外帶 {tk:,} ≠ 總表 {total:,}，差額記外帶"})
+                tk = total - dn
+            out.append(ParsedRow(row=idx + 4, values={"date": d, "tender": t, "total": total, "dine_in": dn, "takeout": tk},
+                                 warnings=w))
+            row_w = []  # 同一天的其他欄位警告只提一次
+    if not out:
+        errors.append({"row": 0, "code": "NO_ROWS", "message": "找不到每日營業資料"})
+    return ParseResult(out, errors, warnings)
+
+
+PARSERS = {"ap_sheet": parse_ap_sheet, "payroll": parse_payroll, "invoice_summary": parse_invoice_summary,
+           "pos_daily": parse_pos_daily}
