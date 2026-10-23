@@ -56,3 +56,18 @@ def test_summary_reimport_skips_and_replaces(client):
     assert len(docs) == 4                                       # 沒有重複入帳
     ins = [d for d in docs if d["counterparty"]["name"] == "明台產物保險股份有限公司"]
     assert len(ins) == 1 and ins[0]["settle_amount"] == 12600
+
+
+def test_import_survives_file_store_failure(client, monkeypatch):
+    """正式環境的檔案儲存寫不進去時（例如容器目錄沒有權限），匯入仍要能完成。"""
+    import app.feature.imports.service as svc
+
+    class Broken:
+        def put(self, *a, **k):
+            raise PermissionError("[Errno 13] Permission denied: './.files'")
+
+    monkeypatch.setattr(svc, "get_file_store", lambda: Broken())
+    b = _upload(client, _rows())
+    assert b["status"] == "parsed" and b["row_count"] == 4
+    assert b["warnings"][0]["code"] == "FILE_NOT_STORED"
+    assert client.post(f"/api/v1/imports/{b['id']}/commit").json()["created"] == 4

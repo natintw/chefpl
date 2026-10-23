@@ -11,6 +11,7 @@ import re
 
 import uuid
 from datetime import date, datetime, timezone
+import logging
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -26,6 +27,8 @@ from app.feature.posting import PostingService
 from app.feature.review import _input_from_json, input_to_json
 from app.seams.company import get_directory
 from app.seams.files import get_file_store
+
+log = logging.getLogger("ledger.imports")
 
 PAYROLL_COUNTERPARTY = "員工薪資"
 MULTI_COMPANY = "*"  # 一個批次涵蓋多家公司（發票彙總表）
@@ -54,8 +57,15 @@ class ImportService:
             raise ValidationFailed("公司不存在")
         if len(data) > self.cfg.max_upload_mb * 1024 * 1024:
             raise ValidationFailed(f"檔案超過 {self.cfg.max_upload_mb} MB")
-        key = get_file_store().put("imports/", file_name, data,
-                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        store_warning = None
+        try:  # 保存原檔只是備查，存不了也不能擋住匯入
+            key = get_file_store().put("imports/", file_name, data,
+                                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        except Exception as e:  # noqa: BLE001
+            log.exception("import original file not stored")
+            key = ""
+            store_warning = {"row": 0, "code": "FILE_NOT_STORED",
+                             "message": f"原始檔案沒有保存（{type(e).__name__}），不影響入帳；請通知系統管理者檢查檔案儲存設定"}
         try:
             result = PARSERS[kind](data)
         except Exception as e:  # noqa: BLE001
@@ -70,6 +80,8 @@ class ImportService:
         self.ops.add_batch(batch)
         builder = {"ap_sheet": self._ap_row, "payroll": self._payroll_row, "invoice_summary": self._summary_row}[kind]
         parsed, errors, warnings = [], list(result.errors), list(result.warnings)
+        if store_warning:
+            warnings.insert(0, store_warning)
         for r in result.rows:
             try:
                 inp, extra = builder(r, batch, store_id, actor)

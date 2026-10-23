@@ -17,7 +17,9 @@ COPY apps/api/alembic.ini ./
 COPY apps/api/migrations ./migrations
 COPY apps/api/fixtures ./fixtures
 
-RUN useradd --create-home --uid 10001 appuser
+# 不以 root 執行；匯入原檔存在 /data/files（可在 Railway 掛 Volume 到 /data，重新部署後原檔才會保留）
+RUN useradd --create-home --uid 10001 appuser && mkdir -p /data/files && chown -R appuser /data
+ENV LOCAL_FILE_DIR=/data/files
 USER appuser
 
 EXPOSE 8080
