@@ -40,7 +40,13 @@ export function BankReviewTable({ items, onDone, renderDetail }: {
   const [open, setOpen] = useState<string | null>(null);
   // 門市：預設帶系統記住的（對方戶名上次選的門市），空字串＝公司層級
   const [storeOf, setStoreOf] = useState<Record<string, string>>({});
-  const storeFor = (it: ReviewItem) => storeOf[it.id] ?? it.suggested_store_id ?? "";
+  // 預設：先前選過的門市；公司（含分公司）只有一家門市時直接帶那家（例：楊師傅＝青年店）
+  const storeFor = (it: ReviewItem) => {
+    if (storeOf[it.id] !== undefined) return storeOf[it.id];
+    if (it.suggested_store_id) return it.suggested_store_id;
+    const only = dir.stores.filter((st) => rootOf(st.company_id) === rootOf(it.company_id));
+    return only.length === 1 ? only[0].id : "";
+  };
   const storesFor = (cid: string) => dir.stores.filter((s) => rootOf(s.company_id) === rootOf(cid));
   const [applyStore, setApplyStore] = useState("");
 
@@ -97,6 +103,8 @@ export function BankReviewTable({ items, onDone, renderDetail }: {
   const withSuggestion = sel.filter((it) => it.payload.suggestion?.documents?.length);
   const selRoots = new Set(sel.map((it) => rootOf(it.company_id)));
   const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ label: string; ok: number; failed: { id: string; message: string }[];
+    period?: string; company?: string } | null>(null);
 
   async function batch(action: string, payload: Record<string, unknown>, ids: string[], label: string) {
     setBusy(true);
@@ -104,10 +112,14 @@ export function BankReviewTable({ items, onDone, renderDetail }: {
       const r = await apiSend<{ ok: string[]; failed: { id: string; message: string }[] }>("POST", "/review-items/batch",
         { ids, action, payload });
       onDone(r.ok);
+      setResult({ label, ok: r.ok.length, failed: r.failed,
+                  period: action === "create_document" ? String(payload.period_key || periodLabel) : undefined,
+                  company: sel[0]?.company_id });
       setPicked((s) => { const n = new Set(s); r.ok.forEach((id) => n.delete(id)); return n; });
       toast(r.failed.length ? `${label} ${r.ok.length} 筆，${r.failed.length} 筆失敗：${r.failed[0].message}` : `${label} ${r.ok.length} 筆`,
             r.failed.length ? "error" : "ok");
     } catch (e) {
+      setResult({ label, ok: 0, failed: ids.map((id) => ({ id, message: (e as Error).message || "批次處理失敗" })) });
       toast((e as Error).message || "批次處理失敗", "error");
     } finally { setBusy(false); }
   }
@@ -143,6 +155,26 @@ export function BankReviewTable({ items, onDone, renderDetail }: {
           ))}
         </div>
       </div>
+
+      {result && (
+        <div role="status" style={{ margin: "12px 14px 0", padding: "10px 12px", borderRadius: 8,
+                                   border: `1px solid ${result.failed.length ? "var(--neg, #b91c1c)" : "var(--line)"}`,
+                                   background: result.failed.length ? "#fef2f2" : "var(--surface-2)" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <strong>{result.label} {result.ok} 筆{result.failed.length ? `，${result.failed.length} 筆失敗` : ""}</strong>
+            {result.ok > 0 && result.period && result.company &&
+              <a className="btn sm" href={`/pl?period=${/^\d{4}-\d{2}$/.test(result.period) ? result.period : ""}&company=${rootOf(result.company)}`}>
+                看損益表{/^\d{4}-\d{2}$/.test(result.period) ? `（${result.period}）` : ""}</a>}
+            <button className="btn sm" style={{ marginLeft: "auto" }} onClick={() => setResult(null)}>關閉</button>
+          </div>
+          {result.failed.length > 0 && (
+            <ul className="small" style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+              {[...new Set(result.failed.map((f) => f.message))].slice(0, 5).map((m) => (
+                <li key={m}>{m}（{result.failed.filter((f) => f.message === m).length} 筆）</li>))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {sel.length > 0 && (
         <div className="ai" style={{ margin: "12px 14px", display: "grid", gap: 10 }}>

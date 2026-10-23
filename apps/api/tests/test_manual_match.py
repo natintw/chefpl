@@ -162,3 +162,19 @@ def test_salary_by_store_is_remembered(client, svc_headers):
     nxt = next(i for i in client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]
                if i["payload"]["item"]["cash_txn_id"] == "ST3")
     assert nxt["suggested_store_id"] == "store-ys-01"
+
+
+def test_batch_fixed_month_company_level(client, svc_headers):
+    """指定月份 2026-08、公司層級：楊師傅 8 月損益（公司合計）出現薪資。"""
+    _send(client, svc_headers, _txn("FX1", 14541, counterparty_name="施駿緯", bank_memo="網路轉帳", bank_note="施駿緯８月薪資",
+                                    txn_date="2026-09-07", cash_account_id="acc-3312"))
+    it = next(i for i in client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]
+              if i["payload"]["item"]["cash_txn_id"] == "FX1")
+    r = client.post("/api/v1/review-items/batch", json={"ids": [it["id"]], "action": "create_document",
+                                                       "payload": {"category_code": "P01", "period_mode": "fixed", "period_key": "2026-08",
+                                                                   "store_by_item": {it["id"]: ""}}})
+    assert r.status_code == 200 and r.json()["ok"] == [it["id"]], r.text
+    pl = client.get("/api/v1/pl/statement", params={"period_from": "2026-08", "period_to": "2026-08", "company_id": "comp-2",
+                                                    "columns": "month"}).json()
+    p01 = [l for s in pl["sections"] for l in s["lines"] if l["category_code"] == "P01"]
+    assert p01 and p01[0]["values"]["total"] == 14541
