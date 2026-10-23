@@ -1,10 +1,14 @@
 "use client";
-/** S5 應付帳款（同頁切換應收、預收）。資料：GET /documents。付款狀態由現金流系統回寫，這裡不手動改。 */
+/**
+ * S5 應付帳款（同頁切換應收、預收）。資料：GET /documents（分頁）、GET /documents/summary（合計，算全部符合條件的單據）。
+ * 付款狀態由現金流系統回寫，這裡不手動改。選總公司時含分公司（與損益表一致）。
+ */
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { DocumentDrawer } from "@/components/DocumentDrawer";
 import { PageHeader } from "@/components/Shell";
 import { PeriodPicker, ScopePicker, useQuery } from "@/components/filters";
+import { useDirectory } from "@/components/directory";
 import { Empty, ErrorBox, Skeleton, Tag } from "@/components/ui";
 import { useApi } from "@/lib/api";
 import { money, settleLabel, SOURCE_LABEL } from "@/lib/format";
@@ -12,6 +16,9 @@ import type { Doc } from "@/lib/types";
 
 const TYPES = { payable: "應付", receivable: "應收", advance_receipt: "預收" } as const;
 type T = keyof typeof TYPES;
+const PAGE = 100;
+type Summary = { count: number; total: number; settled: number; outstanding: number; overdue_count: number;
+  overdue_amount: number; intercompany_outstanding: number; drafts: number; as_of: string };
 
 export default function PayablesPage() {
   const q = useQuery();
@@ -19,22 +26,20 @@ export default function PayablesPage() {
   const [status, setStatus] = useState("");
   const [search, setSearch] = useState("");
   const [docId, setDocId] = useState<string | null>(null);
-  const list = useApi<{ items: Doc[]; total: number }>("/documents", {
+  const [page, setPage] = useState(1);
+  const { companyName, storeName } = useDirectory();
+  const filters = {
     doc_type: type, period: type === "advance_receipt" ? undefined : q.period, company_id: q.company || undefined,
-    store_id: q.store && q.store !== "unallocated" ? q.store : undefined, settle_status: status || undefined,
-    q: search || undefined, page_size: 200,
-  });
+    store_id: q.store || undefined, settle_status: status || undefined, q: search || undefined,
+  };
+  const fkey = JSON.stringify(filters);
+  useEffect(() => setPage(1), [fkey]);  // 篩選改了回到第一頁
+  const list = useApi<{ items: Doc[]; total: number }>("/documents", { ...filters, page, page_size: PAGE });
+  const summary = useApi<Summary>("/documents/summary", filters);
   const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
   const items = list.data?.items || [];
-  const sum = useMemo(() => {
-    const s = { total: 0, settled: 0, open: 0, overdue: 0, overdueN: 0, ic: 0 };
-    items.forEach((d) => {
-      s.total += d.settle_amount || 0; s.settled += d.settled_amount; s.open += d.outstanding || 0;
-      if (d.due_date && d.due_date < today && (d.outstanding || 0) > 0) { s.overdue += d.outstanding || 0; s.overdueN += 1; }
-      if (d.counterparty?.is_intercompany) s.ic += d.outstanding || 0;
-    });
-    return s;
-  }, [items, today]);
+  const sm = summary.data;
+  const pages = Math.max(1, Math.ceil((list.data?.total || 0) / PAGE));
   const filtered = !!(status || search || q.store);
 
   return (
@@ -49,15 +54,18 @@ export default function PayablesPage() {
         {(Object.keys(TYPES) as T[]).map((t) => <button key={t} aria-pressed={type === t} onClick={() => q.set({ type: t === "payable" ? null : t })}>{TYPES[t]}</button>)}
       </div>
 
-      {list.data && (
+      {summary.error && <ErrorBox error={summary.error} onRetry={summary.reload} />}
+      {sm && (
         <section className="grid-kpi" aria-label="摘要">
-          <div className="card pad kpi"><div className="k">{TYPES[type]}合計（含稅）</div><div className="v" style={{ fontSize: 22 }}>{money(sum.total)}</div><div className="small">{items.length} 筆</div></div>
-          <div className="card pad kpi"><div className="k">{type === "payable" ? "已付" : "已收"}</div><div className="v" style={{ fontSize: 22 }}>{money(sum.settled)}</div></div>
-          <div className={`card pad kpi ${sum.overdue ? "alert" : ""}`}><div className="k">未結清・其中逾期</div>
-            <div className="v" style={{ fontSize: 22 }}>{money(sum.open)}</div>
-            <div className="small">{sum.overdueN ? <span className="neg">逾期 {sum.overdueN} 筆 {money(sum.overdue)}</span> : "沒有逾期"}</div></div>
-          <div className="card pad kpi"><div className="k">未結清中集團內</div><div className="v" style={{ fontSize: 22 }}>{money(sum.ic)}</div>
-            <div className="small">對外未結清 {money(sum.open - sum.ic)}</div></div>
+          <div className="card pad kpi"><div className="k">{TYPES[type]}合計（含稅）</div><div className="v" style={{ fontSize: 22 }}>{money(sm.total)}</div>
+            <div className="small">{sm.count} 筆{sm.drafts ? `・其中草稿 ${sm.drafts}` : ""}</div></div>
+          <div className="card pad kpi"><div className="k">{type === "payable" ? "已付" : "已收"}</div><div className="v" style={{ fontSize: 22 }}>{money(sm.settled)}</div></div>
+          <div className={`card pad kpi ${sm.overdue_amount ? "alert" : ""}`}><div className="k">未結清・其中逾期</div>
+            <div className="v" style={{ fontSize: 22 }}>{money(sm.outstanding)}</div>
+            <div className="small">{sm.overdue_count ? <span className="neg">逾期 {sm.overdue_count} 筆 {money(sm.overdue_amount)}</span> : "沒有逾期"}
+              <span className="sub">（以 {sm.as_of} 計）</span></div></div>
+          <div className="card pad kpi"><div className="k">未結清中集團內</div><div className="v" style={{ fontSize: 22 }}>{money(sm.intercompany_outstanding)}</div>
+            <div className="small">對外未結清 {money(sm.outstanding - sm.intercompany_outstanding)}</div></div>
         </section>
       )}
 
@@ -68,7 +76,8 @@ export default function PayablesPage() {
               <input placeholder="搜尋對象、摘要或發票號碼" value={search} onChange={(e) => setSearch(e.target.value)} /></label>
             <label className="ctl"><span className="k">狀態</span>
               <select value={status} onChange={(e) => setStatus(e.target.value)}>
-                <option value="">全部</option><option value="open">未結清</option><option value="partial">部分</option><option value="settled">已結清</option>
+                <option value="">全部</option><option value="open,partial">未結清（含部分）</option><option value="open">完全未付</option>
+                <option value="partial">部分</option><option value="settled">已結清</option>
               </select></label>
           </div>
           {list.loading && !list.data && <Skeleton rows={8} />}
@@ -80,7 +89,7 @@ export default function PayablesPage() {
           {items.length > 0 && (
             <div className="tbl-wrap">
               <table>
-                <thead><tr><th>對象</th><th>發票</th><th>來源</th><th>到期日</th><th className="r">金額</th><th className="r">已結清</th><th className="r">未結清</th><th>狀態</th></tr></thead>
+                <thead><tr><th>對象</th><th>公司／門市</th><th>發票</th><th>來源</th><th>到期日</th><th className="r">金額</th><th className="r">已結清</th><th className="r">未結清</th><th>狀態</th></tr></thead>
                 <tbody>
                   {items.map((d) => {
                     const [label, cls] = settleLabel(d.settle_status, d.doc_type);
@@ -89,6 +98,8 @@ export default function PayablesPage() {
                       <tr key={d.id} className={`clickable ${docId === d.id ? "sel" : ""}`} onClick={() => setDocId(d.id)}>
                         <td><div style={{ fontWeight: 500 }}>{d.counterparty?.name || "（未指定）"}</div>
                           <div className="small">{d.memo || d.period_keys.join("、")}{d.status === "draft" ? "・草稿" : ""}</div></td>
+                        <td className="small">{q.company ? "" : <div>{companyName(d.company_id)}</div>}
+                          <div>{d.store_ids.length ? d.store_ids.map((x) => storeName(x)).join("、") : "公司層級"}</div></td>
                         <td className="num small">{d.invoice_nos.length ? d.invoice_nos.join(" ") : d.has_invoice ? "有" : "無發票"}</td>
                         <td><Tag kind="src">{SOURCE_LABEL[d.source_kind] || d.source_kind}</Tag></td>
                         <td className="num">{d.due_date || "—"}</td>
@@ -99,10 +110,18 @@ export default function PayablesPage() {
                       </tr>
                     );
                   })}
-                  <tr className="sum"><td colSpan={4}>合計 {list.data?.total} 筆</td><td className="num r">{money(sum.total)}</td>
-                    <td className="num r">{money(sum.settled)}</td><td className="num r">{money(sum.open)}</td><td /></tr>
+                  {sm && <tr className="sum"><td colSpan={5}>全部 {sm.count} 筆合計</td><td className="num r">{money(sm.total)}</td>
+                    <td className="num r">{money(sm.settled)}</td><td className="num r">{money(sm.outstanding)}</td><td /></tr>}
                 </tbody>
               </table>
+            </div>
+          )}
+          {pages > 1 && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end", padding: "10px 14px" }}>
+              <span className="small">第 {(page - 1) * PAGE + 1}–{Math.min(page * PAGE, list.data?.total || 0)} 筆，共 {list.data?.total} 筆</span>
+              <button className="btn sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>上一頁</button>
+              <span className="small num">{page} / {pages}</span>
+              <button className="btn sm" disabled={page >= pages} onClick={() => setPage(page + 1)}>下一頁</button>
             </div>
           )}
         </section>

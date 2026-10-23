@@ -63,13 +63,27 @@ export function ScopePicker({ allowGroup = true, withStore = true }: { allowGrou
           ])}
         </select>
       </label>
-      {withStore && q.company && (
+      {withStore && (
         <label className="ctl">
           <span className="k">門市</span>
-          <select value={q.store} aria-label="門市" onChange={(e) => q.set({ store: e.target.value || null })}>
+          <select value={q.store} aria-label="門市" onChange={(e) => {
+            const v = e.target.value;
+            const st = dir.stores.find((x) => x.id === v);
+            // 全集團時直接選門市：公司一併帶入，標題與篩選才一致
+            q.set({ store: v || null, ...(st && !q.company ? { company: st.company_id } : {}) });
+          }}>
             <option value="">全部門市</option>
-            {stores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            <option value="unallocated">公司層級（未分攤）</option>
+            {q.company
+              ? stores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)
+              : dir.companies.map((c) => {
+                  const own = dir.stores.filter((s) => s.company_id === c.id);
+                  return own.length ? (
+                    <optgroup key={c.id} label={c.name}>
+                      {own.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </optgroup>
+                  ) : null;
+                })}
+            {q.company && <option value="unallocated">公司層級（未分攤）</option>}
           </select>
         </label>
       )}

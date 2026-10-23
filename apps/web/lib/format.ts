@@ -34,7 +34,7 @@ export function defaultPeriod(now = new Date()): string {
 export const PRIME_WARN = 65; // 【待確認】KPI 警戒值，目前為示意
 
 export const SOURCE_LABEL: Record<string, string> = {
-  invoice: "發票", ap_sheet: "應付表", payroll: "薪資", pos: "POS", platform: "平台", b2b: "B2B",
+  invoice: "發票", invoice_summary: "發票彙總", ap_sheet: "應付表", payroll: "薪資", pos: "POS", platform: "平台", b2b: "B2B",
   recurring: "固定", bank_only: "銀行", allocation: "分攤", manual: "人工", accrual: "預估",
   advance: "預收", system: "系統", opening: "開帳",
 };

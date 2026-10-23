@@ -118,23 +118,42 @@ def balances(as_of: date, company_id: str | None = None, user: UserPrincipal = D
 
 
 # ---------------------------------------------------------------- 單據
-@router.get("/documents")
-def list_documents(doc_type: str | None = None, company_id: str | None = None, store_id: str | None = None,
-                   period: str | None = None, settle_status: str | None = None, source_kind: str | None = None,
-                   due_before: date | None = None, q: str | None = None, page: int = 1,
-                   page_size: int = Query(50, le=200), user: UserPrincipal = Depends(need("doc.view")),
-                   s: Session = Depends(get_ledger_session, scope="function")):
+def _doc_filters(user: UserPrincipal, company_id: str | None, store_id: str | None, **rest) -> dict:
+    """單據清單與合計共用：選總公司時含分公司（與損益表一致）。"""
     cids = _cids(user)
     if company_id:
         _check_company(user, company_id)
-        cids = {company_id}
+        cids = {c.id for c in get_directory().list_companies()
+                if c.id == company_id or c.parent_company_id == company_id}
     if user.scope.store_only and (not store_id or store_id not in user.scope.stores):
         raise Forbidden("請選擇你負責的門市")
-    rows, total = DocumentRepository(s).list(company_ids=cids, doc_type=doc_type, period=period,
-                                             settle_status=settle_status, source_kind=source_kind,
-                                             store_id=store_id, due_before=due_before, q=q, page=page,
-                                             page_size=page_size)
-    return {"items": [ser.document(d, detail=False) for d in rows], "total": total, "page": page}
+    return {"company_ids": cids, "store_id": store_id, **rest}
+
+
+@router.get("/documents")
+def list_documents(doc_type: str | None = None, company_id: str | None = None, store_id: str | None = None,
+                   period: str | None = None, settle_status: str | None = None, source_kind: str | None = None,
+                   due_before: date | None = None, q: str | None = None, page: int = Query(1, ge=1),
+                   page_size: int = Query(50, le=200), user: UserPrincipal = Depends(need("doc.view")),
+                   s: Session = Depends(get_ledger_session, scope="function")):
+    f = _doc_filters(user, company_id, store_id, doc_type=doc_type, period=period, settle_status=settle_status,
+                     source_kind=source_kind, due_before=due_before, q=q)
+    rows, total = DocumentRepository(s).list(page=page, page_size=page_size, **f)
+    return {"items": [ser.document(d, detail=False) for d in rows], "total": total, "page": page,
+            "page_size": page_size}
+
+
+@router.get("/documents/summary")
+def documents_summary(doc_type: str | None = None, company_id: str | None = None, store_id: str | None = None,
+                      period: str | None = None, settle_status: str | None = None, source_kind: str | None = None,
+                      q: str | None = None, user: UserPrincipal = Depends(need("doc.view")),
+                      s: Session = Depends(get_ledger_session, scope="function")):
+    """清單上方的合計：算全部符合條件的單據，不受分頁影響。逾期以台北時間今天為準。"""
+    from datetime import datetime, timedelta, timezone
+    today = datetime.now(timezone(timedelta(hours=8))).date()
+    f = _doc_filters(user, company_id, store_id, doc_type=doc_type, period=period, settle_status=settle_status,
+                     source_kind=source_kind, q=q)
+    return {**DocumentRepository(s).summary(today=today, **f), "as_of": today.isoformat()}
 
 
 @router.post("/documents", status_code=201)

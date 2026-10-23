@@ -5,7 +5,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import and_, any_, func, literal, or_, select, text
+from sqlalchemy import and_, any_, case, func, literal, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.feature.models import Counterparty, Document, DocumentLine, Settlement
@@ -48,10 +48,11 @@ class DocumentRepository:
             stmt = stmt.where(Document.relation == relation)
         return list(self.s.scalars(stmt))
 
-    def list(self, *, company_ids: set[str] | None = None, doc_type: str | None = None,
-             period: str | None = None, settle_status: str | None = None, source_kind: str | None = None,
-             status: str | None = None, store_id: str | None = None, due_before: date | None = None,
-             q: str | None = None, page: int = 1, page_size: int = 50) -> tuple[list[Document], int]:
+    def _filtered(self, *, company_ids: set[str] | None = None, doc_type: str | None = None,
+                  period: str | None = None, settle_status: str | None = None, source_kind: str | None = None,
+                  status: str | None = None, store_id: str | None = None, due_before: date | None = None,
+                  q: str | None = None):
+        """清單與合計共用的篩選條件。store_id="unallocated" 表示公司層級（明細沒有門市）。"""
         stmt = select(Document)
         conds = []
         if company_ids is not None:
@@ -59,7 +60,7 @@ class DocumentRepository:
         if doc_type:
             conds.append(Document.doc_type == doc_type)
         if settle_status:
-            conds.append(Document.settle_status == settle_status)
+            conds.append(Document.settle_status.in_(settle_status.split(",")))
         if source_kind:
             conds.append(Document.source_kind == source_kind)
         conds.append(Document.status == status if status else Document.status != "void")
@@ -69,18 +70,44 @@ class DocumentRepository:
             sub = select(DocumentLine.document_id)
             if period:
                 sub = sub.where(DocumentLine.period_key == period)
-            if store_id:
+            if store_id == "unallocated":
+                sub = sub.where(DocumentLine.store_id.is_(None))
+            elif store_id:
                 sub = sub.where(DocumentLine.store_id == store_id)
             conds.append(Document.id.in_(sub))
         if q:
             stmt = stmt.outerjoin(Counterparty, Counterparty.id == Document.counterparty_id)
             conds.append(or_(Counterparty.name.ilike(f"%{q}%"), Document.memo.ilike(f"%{q}%"),
                              literal(q) == any_(Document.invoice_nos)))
-        stmt = stmt.where(and_(*conds))
+        return stmt.where(and_(*conds))
+
+    def list(self, *, page: int = 1, page_size: int = 50, **filters) -> tuple[list[Document], int]:
+        stmt = self._filtered(**filters)
         total = self.s.scalar(select(func.count()).select_from(stmt.subquery())) or 0
         rows = self.s.scalars(stmt.order_by(Document.doc_date.desc(), Document.created_at.desc())
                               .offset((page - 1) * page_size).limit(page_size)).unique().all()
         return list(rows), total
+
+    def summary(self, *, today: date, **filters) -> dict[str, int]:
+        """符合篩選條件的「全部」單據合計（不受分頁影響）。"""
+        sub = self._filtered(**filters).subquery()
+        outstanding = func.coalesce(sub.c.settle_amount, 0) - sub.c.settled_amount
+        is_open = sub.c.settle_status.in_(("open", "partial"))
+        overdue = and_(is_open, sub.c.due_date < today, outstanding > 0)
+        ic = select(Counterparty.id).where(Counterparty.is_intercompany.is_(True)).scalar_subquery()
+        row = self.s.execute(select(
+            func.count(),
+            func.coalesce(func.sum(sub.c.settle_amount), 0),
+            func.coalesce(func.sum(sub.c.settled_amount), 0),
+            func.coalesce(func.sum(case((is_open, outstanding), else_=0)), 0),
+            func.coalesce(func.sum(case((overdue, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((overdue, outstanding), else_=0)), 0),
+            func.coalesce(func.sum(case((and_(is_open, sub.c.counterparty_id.in_(ic)), outstanding), else_=0)), 0),
+            func.coalesce(func.sum(case((sub.c.status == "draft", 1), else_=0)), 0),
+        ).select_from(sub)).one()
+        keys = ("count", "total", "settled", "outstanding", "overdue_count", "overdue_amount",
+                "intercompany_outstanding", "drafts")
+        return {k: int(v or 0) for k, v in zip(keys, row)}
 
     def open_items(self, *, company_id: str | None, doc_types: list[str], due_before: date | None,
                    updated_after: datetime | None, after_key: tuple[datetime, uuid.UUID] | None,
