@@ -45,7 +45,8 @@ class PostingService:
         self.cfg = get_settings()
 
     # ------------------------------------------------------------------ 建立
-    def create(self, inp: DocumentInput, actor: str) -> Document:
+    def create(self, inp: DocumentInput, actor: str, bulk: bool = False) -> Document:
+        """bulk=True：不個別寫入，由呼叫端最後一次 flush（批次匯入用；重複來源要先自行排除）。"""
         cp = self._resolve_counterparty(inp, actor)
         self._validate(inp, cp)
 
@@ -59,6 +60,8 @@ class PostingService:
             related_document_id=inp.related_document_id, relation=inp.relation, created_by=actor,
             status=inp.status, settled_amount=0,
         )
+        if bulk:
+            doc.id = uuid.uuid4()  # 先給 ID，flush 前就能被待確認等引用
         if inp.doc_type in SETTLEABLE_TYPES:
             if doc.due_date is None and inp.doc_type == "payable":
                 doc.due_date = due_date_for(inp.doc_date, cp.payment_rule if cp else self.cfg.default_payment_rule)
@@ -77,6 +80,10 @@ class PostingService:
                                           period_key=ln.period_key, category_code=ln.category_code,
                                           amount=ln.amount, description=ln.description,
                                           is_intercompany=intercompany and ln.category_code in ("C99", "R06")))
+        if bulk:
+            self.s.add(doc)
+            self._after_create(doc, inp, actor)
+            return doc
         try:
             with self.s.begin_nested():
                 self.docs.add(doc)

@@ -148,8 +148,11 @@ class VendorMapService:
                 if not name:
                     res.errors.append({"row": r_idx, "message": f"找不到統編 {code_raw} 的廠商，新增時要填廠商名稱"})
                     continue
-                cp = self.catalog.add_counterparty(name=name, tax_id=tax_id, id_masked=masked, roles=["vendor"],
-                                                   default_category_code=category, aliases=[])
+                cp = Counterparty(id=uuid.uuid4(), name=name, tax_id=tax_id, id_masked=masked, roles=["vendor"],
+                                  default_category_code=category, aliases=[], keywords=[], is_intercompany=False,
+                                  is_active=True)
+                self.s.add(cp)  # 最後一次寫入
+                self._add_to_index(self._index(), cp)
                 res.created += 1
                 continue
             if name and (tax_id or masked) and name != cp.name:
@@ -197,15 +200,47 @@ class VendorMapService:
         if cat.nature not in VENDOR_NATURES:
             raise ValidationFailed(f"{code} {cat.name} 是收入類別，廠商（應付）不能用")
 
+    # ----- 批次用的快取：上傳一百多列時，不要每列都查資料庫 -----
+    def _index(self) -> dict:
+        if not hasattr(self, "_idx"):
+            idx: dict = {"tax": {}, "masked": {}, "name": {}}
+            for cp in self.s.scalars(select(Counterparty)):
+                self._add_to_index(idx, cp)
+            self._idx = idx
+        return self._idx
+
+    @staticmethod
+    def _add_to_index(idx: dict, cp: Counterparty) -> None:
+        if cp.tax_id:
+            idx["tax"].setdefault(cp.tax_id, cp)
+        if cp.id_masked:
+            idx["masked"].setdefault((cp.id_masked, cp.name), cp)
+            idx["masked"].setdefault((cp.id_masked, None), cp)
+        for n in [cp.name, *(cp.aliases or [])]:
+            idx["name"].setdefault(n, cp)
+
+    def _drafts_by_vendor(self) -> dict:
+        """所有等待分類的草稿（含明細），一次讀進來：{廠商 ID: {單據 ID: 單據}}。"""
+        if not hasattr(self, "_drafts"):
+            self._drafts: dict = {}
+            for d in self.s.scalars(select(Document).where(Document.status == "draft",
+                                                           Document.counterparty_id.is_not(None))):
+                self._drafts.setdefault(d.counterparty_id, {})[d.id] = d
+        return self._drafts
+
+    def _open_reviews(self) -> list[ReviewItem]:
+        if not hasattr(self, "_reviews"):
+            self._reviews = list(self.s.scalars(select(ReviewItem).where(
+                ReviewItem.kind.in_(("unclassified", "new_counterparty")), ReviewItem.status == "open")))
+        return self._reviews
+
     def _find(self, tax_id: str | None, masked: str | None, name: str) -> Counterparty | None:
+        idx = self._index()
         if tax_id:
-            return self.catalog.counterparty_by_tax_id(tax_id)
+            return idx["tax"].get(tax_id)
         if masked:
-            return self.catalog.counterparty_by_masked(masked, name or None)
-        hit = self.catalog.counterparty_by_name(name)
-        if hit:
-            return hit
-        return self.s.scalars(select(Counterparty).where(Counterparty.aliases.any(name))).first()
+            return idx["masked"].get((masked, name or None)) or idx["masked"].get((masked, None))
+        return idx["name"].get(name)
 
     def _rename(self, cp: Counterparty, new_name: str) -> None:
         old = cp.name
@@ -214,29 +249,32 @@ class VendorMapService:
 
     def _apply_to_drafts(self, cp: Counterparty, actor: str) -> int:
         """這個廠商等待分類的草稿：套用類別並入帳，對應的待確認一併結案。"""
-        from app.feature.review import ReviewService
         if not cp.default_category_code:
             return 0
-        drafts = {d.id for d in self.s.scalars(select(Document).where(
-            Document.counterparty_id == cp.id, Document.status == "draft"))}
-        if not drafts:
+        docs = self._drafts_by_vendor().get(cp.id, {})
+        if not docs:
             return 0
-        review = ReviewService(self.s)
+        from app.feature.posting import PostingService
+        posting = PostingService(self.s)
+        now = datetime.now(timezone.utc)
         done = 0
-        items = self.s.scalars(select(ReviewItem).where(ReviewItem.kind == "unclassified", ReviewItem.status == "open"))
-        for it in items:
+        for it in [i for i in self._open_reviews() if i.kind == "unclassified" and i.status == "open"]:
             doc_id = (it.payload or {}).get("document_id")
-            if doc_id and uuid.UUID(doc_id) in drafts:
-                review.resolve(it.id, "set_category",
-                               {"category_code": cp.default_category_code, "remember_rule": False}, actor)
-                drafts.discard(uuid.UUID(doc_id))
-                done += 1
+            doc = docs.get(uuid.UUID(doc_id)) if doc_id else None
+            if doc is None or doc.status != "draft":
+                continue
+            for ln in doc.lines:
+                ln.category_code = cp.default_category_code
+            posting.post(doc)
+            it.status, it.resolved_by, it.resolved_at = "resolved", actor, now
+            it.resolution = {"action": "set_category", "category_code": cp.default_category_code, "via": "vendor_map",
+                             "document_id": str(doc.id)}
+            done += 1
         return done
 
     def _close_new_vendor_review(self, cp: Counterparty, actor: str) -> None:
-        for it in self.s.scalars(select(ReviewItem).where(ReviewItem.kind == "new_counterparty",
-                                                          ReviewItem.status == "open",
-                                                          ReviewItem.ref == f"counterparty:{cp.id}")):
+        for it in [i for i in self._open_reviews() if i.kind == "new_counterparty" and i.status == "open"
+                   and i.ref == f"counterparty:{cp.id}"]:
             it.status, it.resolved_by = "resolved", actor
             it.resolution = {"action": "vendor_map", "category_code": cp.default_category_code}
             it.resolved_at = datetime.now(timezone.utc)

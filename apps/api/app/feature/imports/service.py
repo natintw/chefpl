@@ -22,7 +22,7 @@ from app.feature.classification import classify
 from app.feature.common import (PERIOD_RE, DocumentInput, LineInput, last_day, months_in_memo, split_evenly,
                                 untaxed)
 from app.feature.imports.parsers import PARSERS, ParsedRow, looks_like_invoice_summary
-from app.feature.models import ImportBatch
+from app.feature.models import Counterparty, ImportBatch
 from app.feature.posting import PostingService
 from app.feature.review import _input_from_json, input_to_json
 from app.seams.company import get_directory
@@ -78,6 +78,14 @@ class ImportService:
             return self.ops.add_batch(batch)
 
         self.ops.add_batch(batch)
+        if kind == "invoice_summary":  # 先一次讀好比對要用的資料，避免每列查一次資料庫
+            refs = []
+            for r in result.rows:
+                try:
+                    refs.append(self._summary_ref(r.values)[3])
+                except ValidationFailed:
+                    pass
+            self._prefetch_existing(refs)
         builder = {"ap_sheet": self._ap_row, "payroll": self._payroll_row, "invoice_summary": self._summary_row}[kind]
         parsed, errors, warnings = [], list(result.errors), list(result.warnings)
         if store_warning:
@@ -122,6 +130,7 @@ class ImportService:
             cp = self.posting.ensure_counterparty(v["vendor"], v.get("tax_id"), batch.company_id, actor)
             if v.get("id_masked"):
                 cp.id_masked = v["id_masked"]
+            self._index_vendor(self._vendor_index(), cp)
             extra_w.append({"code": "NEW_COUNTERPARTY", "message": f"新廠商「{v['vendor']}」，已建立並列入待確認"})
         if cp.is_intercompany:
             extra_w.append({"code": "INTERCOMPANY", "message": "集團內交易，月結時需與對方公司核對"})
@@ -158,18 +167,70 @@ class ImportService:
             import_batch_id=batch.id, status="posted" if decided else "draft", lines=lines)
         return inp, {"warnings": extra_w, "suggestion": suggestion, "vendor": v["vendor"]}
 
-    def _summary_row(self, r: ParsedRow, batch: ImportBatch, store_id: str | None, actor: str):
-        """發票系統「廠商應付彙總表」的一列 → 一張應付單（含稅合計，未稅依 5% 還原）。"""
-        v = r.values
-        extra_w: list[dict] = []
+    # ----- 發票彙總表：批次比對用的快取 -----
+    def _summary_ref(self, v: dict) -> tuple[Any, str | None, str | None, str]:
+        """(公司, 門市 ID, 門市名稱, 來源鍵)。只用主檔，不查資料庫。"""
         company = self.dir.get_by_tax_id(v["company_tax_id"])
         if company is None:
             raise ValidationFailed(f"找不到統編 {v['company_tax_id']}（{v.get('company_name') or '未填名稱'}）的公司，"
                                    f"請先在公司主檔補上統編")
         store_name = v.get("store")
-        if v.get("store_code") and "/" in v["store_code"] and v["store_code"].split("/", 1)[1] in ("總部", "公司"):
-            store_name = store_name or None
         store = self._store(store_name, company.id, None)
+        ref_vendor = v.get("tax_id") or v.get("id_masked") or v["vendor"]
+        return company, store, store_name, f"{company.id}:{store or '-'}:{ref_vendor}:{v['invoice_month']}:{v['period']}"
+
+    def _prefetch_existing(self, refs: list[str]) -> None:
+        from sqlalchemy import select
+
+        from app.feature.models import Document
+        self._existing: dict[str, Any] = {}
+        uniq = sorted(set(refs))
+        for i in range(0, len(uniq), 500):
+            for d in self.s.scalars(select(Document).where(
+                    Document.source_kind == "invoice_summary", Document.status != "void",
+                    Document.source_ref.in_(uniq[i:i + 500]))):
+                self._existing[d.source_ref] = d
+
+    def _existing_doc(self, ref: str):
+        if hasattr(self, "_existing"):
+            return self._existing.get(ref)
+        return self.docs.get_by_source("invoice_summary", ref)
+
+    def _vendor_index(self) -> dict[str, dict]:
+        if not hasattr(self, "_vidx"):
+            from sqlalchemy import select
+
+            from app.feature.models import Counterparty
+            idx: dict[str, dict] = {"tax": {}, "masked": {}, "name": {}}
+            for cp in self.s.scalars(select(Counterparty)):
+                self._index_vendor(idx, cp)
+            self._vidx = idx
+        return self._vidx
+
+    @staticmethod
+    def _index_vendor(idx: dict, cp) -> None:
+        if cp.tax_id:
+            idx["tax"].setdefault(cp.tax_id, cp)
+        if cp.id_masked:
+            idx["masked"].setdefault((cp.id_masked, cp.name), cp)
+        for n in [cp.name, *(cp.aliases or [])]:
+            idx["name"].setdefault(n, cp)
+
+    def _lookup_vendor(self, v: dict):
+        idx = self._vendor_index()
+        if v.get("id_masked"):
+            hit = idx["masked"].get((v["id_masked"], v["vendor"]))
+            if hit:
+                return hit
+        if v.get("tax_id"):
+            return idx["tax"].get(v["tax_id"])  # 有統編就只認統編，名稱可能是辨識錯字
+        return idx["name"].get(v["vendor"])
+
+    def _summary_row(self, r: ParsedRow, batch: ImportBatch, store_id: str | None, actor: str):
+        """發票系統「廠商應付彙總表」的一列 → 一張應付單（含稅合計，未稅依 5% 還原）。"""
+        v = r.values
+        extra_w: list[dict] = []
+        company, store, store_name, source_ref = self._summary_ref(v)
         if store:
             st = self.dir.get_store(store)
             if st and st.company_id != company.id:
@@ -177,23 +238,27 @@ class ImportService:
                                 "message": f"門市「{store_name}」在主檔屬於{self.dir.get_company(st.company_id).name}，"
                                            f"但發票開給{company.name}（同一法人，以發票為準記在{company.name}）"})
 
-        cp = None
-        if v.get("id_masked"):
-            cp = self.catalog.counterparty_by_masked(v["id_masked"], v["vendor"])
-        if cp is None:
-            cp = self.catalog.find_counterparty(v["vendor"], v.get("tax_id"))
+        cp = self._lookup_vendor(v)
+        if cp is None and not v.get("tax_id"):
+            cp = self.catalog.find_counterparty(v["vendor"], None)  # 名稱關鍵字比對（少見，才查資料庫）
         if cp is None:
             # 新廠商不另開「新對象」待確認：沒有類別的會以「分類」待確認出現，到「廠商類別」一次設定
-            cp = self.posting.ensure_counterparty(v["vendor"], v.get("tax_id"), company.id, actor, review=False)
-            if v.get("id_masked"):
-                cp.id_masked = v["id_masked"]
+            group = self.dir.get_by_tax_id(v["tax_id"]) if v.get("tax_id") else None
+            cp = Counterparty(id=uuid.uuid4(), name=v["vendor"], tax_id=v.get("tax_id"), id_masked=v.get("id_masked"),
+                              roles=["vendor"], is_intercompany=group is not None,
+                              intercompany_company_id=group.id if group else None,
+                              payment_rule=self.cfg.default_payment_rule, keywords=[], aliases=[],
+                              issues_invoice=True, is_active=True)
+            self.s.add(cp)
+            self._index_vendor(self._vendor_index(), cp)  # 同一個檔案後面的列要認得這家新廠商
             extra_w.append({"code": "NEW_COUNTERPARTY", "message": f"新廠商「{v['vendor']}」，請到「廠商類別」設定類別"})
         elif v["vendor"] != cp.name and v["vendor"] not in (cp.aliases or []):
             cp.aliases = [*(cp.aliases or []), v["vendor"]]  # 同統編不同寫法（發票辨識誤差），記成別名
         if cp.is_intercompany:
             extra_w.append({"code": "INTERCOMPANY", "message": "集團內交易，月結時需與對方公司核對"})
 
-        c = classify(self.catalog, cp, None, "expense", v["amount"])
+        # 彙總表沒有品名，AI 也猜不準；類別一律靠「廠商類別」對應表
+        c = classify(self.catalog, cp, None, "expense", v["amount"], use_ai=False)
         code, decided, suggestion = c.category_code, c.decided, c.suggestion
         if not decided:
             extra_w.append({"code": "UNCLASSIFIED", "message": "廠商還沒有對應類別，入帳後先記成草稿；到「廠商類別」設定後自動補入帳"})
@@ -201,8 +266,6 @@ class ImportService:
         has_inv = bool(v.get("tax_id"))  # 個人（身分證字號）或沒有統編的視為無發票，不還原稅額
         net = untaxed(v["amount"], has_inv, self.cfg.tax_rate)
         period, inv_month = v["period"], v["invoice_month"]
-        ref_vendor = v.get("tax_id") or v.get("id_masked") or v["vendor"]
-        source_ref = f"{company.id}:{store or '-'}:{ref_vendor}:{inv_month}:{period}"
         memo = f"{inv_month} 發票 {v['invoice_count']} 張" if v.get("invoice_count") else f"{inv_month} 發票"
         due = date.fromisoformat(v["due"]) if v.get("due") else None
         inp = DocumentInput(
@@ -213,7 +276,7 @@ class ImportService:
             lines=[LineInput(period, code or "B99", net, store, memo)])
 
         action = "create"
-        existing = self.docs.get_by_source("invoice_summary", source_ref)
+        existing = self._existing_doc(source_ref)
         if existing is not None:
             if existing.settle_amount == v["amount"]:
                 action = "skip"
@@ -297,9 +360,13 @@ class ImportService:
 
     def _commit_summary(self, batch: ImportBatch, actor: str) -> dict[str, Any]:
         created = replaced = skipped = drafts = 0
+        self._prefetch_existing([p["input"]["source_ref"] for p in batch.parsed])
+        self._vendor_index()  # 一次載入所有廠商（之後依 ID 取都不用再查）
+        seen: set[str] = set()
+        pending_reviews: list[tuple] = []
         for p in batch.parsed:
             inp = _input_from_json(p["input"])
-            existing = self.docs.get_by_source("invoice_summary", inp.source_ref)  # 入帳當下再比一次
+            existing = self._existing_doc(inp.source_ref)  # 入帳當下再比一次
             if existing is not None:
                 if existing.settle_amount == inp.settle_amount:
                     skipped += 1
@@ -310,6 +377,10 @@ class ImportService:
                 self.posting.void(existing.id, f"由批次 {batch.id} 取代（金額 {existing.settle_amount:,} → "
                                                f"{inp.settle_amount:,}）", actor)
                 replaced += 1
+            if inp.source_ref in seen:  # 同一個檔案裡重複的列
+                raise HasErrors("檔案裡有重複的列（同公司、門市、廠商、發票月份、入帳月份）",
+                                [{"row": p["row"], "message": inp.source_ref}])
+            seen.add(inp.source_ref)
             if inp.status == "draft" and inp.counterparty_id:  # 預覽之後才設定廠商類別的，入帳時再分類一次
                 cp = self.catalog.counterparty(inp.counterparty_id)
                 c = classify(self.catalog, cp, None, "expense", inp.settle_amount or 0, use_ai=False)
@@ -317,13 +388,17 @@ class ImportService:
                     for ln in inp.lines:
                         ln.category_code = c.category_code
                     inp.status = "posted"
-            doc = self.posting.create(inp, actor)
+            doc = self.posting.create(inp, actor, bulk=True)
             created += 1
             if doc.status == "draft":
                 drafts += 1
-                self.ops.open_review("unclassified", doc.company_id, f"document:{doc.id}",
-                                     {"document_id": str(doc.id), "counterparty": p.get("vendor"),
-                                      "suggestion": p.get("suggestion")}, period_key=inp.lines[0].period_key)
+                pending_reviews.append((doc, p.get("vendor"), p.get("suggestion"), inp.lines[0].period_key))
+        self.s.flush()  # 一次寫入全部單據（批次 INSERT）
+        from app.feature.models import ReviewItem
+        for doc, vendor, suggestion, period_key in pending_reviews:  # 新單據不可能已有待確認，直接建立
+            self.s.add(ReviewItem(kind="unclassified", company_id=doc.company_id, ref=f"document:{doc.id}",
+                                  payload={"document_id": str(doc.id), "counterparty": vendor, "suggestion": suggestion},
+                                  period_key=period_key))
         batch.status, batch.committed_at = "committed", datetime.now(timezone.utc)
         return {"batch_id": str(batch.id), "created": created, "drafts_for_review": drafts, "replaced": replaced,
                 "skipped": skipped, "total_amount": batch.total_amount, "superseded_batches": []}

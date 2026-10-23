@@ -18,6 +18,7 @@ class OpsRepository:
 
     # ----- 月份 -----
     def period(self, company_id: str, period_key: str) -> Period:
+        self.__dict__.pop("_closed_memo", None)  # 拿去改狀態的話，記住的結果作廢
         p = self.s.get(Period, (company_id, period_key))
         if p is None:
             p = Period(company_id=company_id, period_key=period_key, status="open")
@@ -26,8 +27,13 @@ class OpsRepository:
         return p
 
     def is_closed(self, company_id: str, period_key: str) -> bool:
-        p = self.s.get(Period, (company_id, period_key))
-        return p is not None and p.status == "closed"
+        # 同一個請求裡記住結果（沒有月結紀錄時 session.get 每次都會再查一次）；關帳／重開都走 period()，會更新這裡
+        memo = self.__dict__.setdefault("_closed_memo", {})
+        key = (company_id, period_key)
+        if key not in memo:
+            p = self.s.get(Period, key)
+            memo[key] = p is not None and p.status == "closed"
+        return memo[key]
 
     def list_periods(self, period_key: str) -> list[Period]:
         return list(self.s.scalars(select(Period).where(Period.period_key == period_key)))

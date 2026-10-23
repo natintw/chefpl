@@ -71,11 +71,14 @@ class CatalogRepository:
         return cp
 
     # ----- 規則 -----
+    @cached_property
+    def _all_rules(self) -> list[ClassificationRule]:
+        """規則表不大：一次讀進來，分類時在記憶體裡篩（匯入幾百列時避免每列兩次查詢）。"""
+        return list(self.s.scalars(select(ClassificationRule).order_by(ClassificationRule.created_at.desc())))
+
     def rules(self, layer: str, counterparty_id: uuid.UUID | None = None) -> list[ClassificationRule]:
-        stmt = select(ClassificationRule).where(ClassificationRule.layer == layer)
-        if counterparty_id is not None:
-            stmt = stmt.where(ClassificationRule.counterparty_id == counterparty_id)
-        return list(self.s.scalars(stmt.order_by(ClassificationRule.created_at.desc())))
+        return [r for r in self._all_rules if r.layer == layer
+                and (counterparty_id is None or r.counterparty_id == counterparty_id)]
 
     def add_rule(self, layer: str, category_code: str, created_by: str, counterparty_id: uuid.UUID | None = None,
                  keyword: str | None = None) -> ClassificationRule:
@@ -83,4 +86,6 @@ class CatalogRepository:
                                counterparty_id=counterparty_id, keyword=keyword)
         self.s.add(r)
         self.s.flush()
+        if "_all_rules" in self.__dict__:
+            self._all_rules.insert(0, r)
         return r

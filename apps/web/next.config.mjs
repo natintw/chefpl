@@ -10,6 +10,8 @@ const api = process.env.LEDGER_API_URL || "http://127.0.0.1:8080";
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   poweredByHeader: false,
+  // 轉發到後端的等待上限（預設約 30 秒）。大檔匯入在跨區連線時可能超過，放寬到 2 分鐘
+  experimental: { proxyTimeout: 120_000 },
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${api}/api/:path*` }];
   },
