@@ -211,8 +211,10 @@ class BankTxnRef(BaseModel):
 
 
 class BankTxnWebhookIn(BaseModel):
-    """imported：新匯入的交易（要比對）；deleted：現金流系統刪掉的交易（撤回先前的比對結果）。"""
-    event: Literal["bank_transactions.imported", "bank_transactions.deleted"] = "bank_transactions.imported"
+    """imported：新匯入的交易（要比對）；deleted：現金流系統刪掉的交易（撤回先前的比對結果）；
+    status：查詢交易目前的核對狀態（唯讀，現金流系統的「帳務核對」頁用）。"""
+    event: Literal["bank_transactions.imported", "bank_transactions.deleted",
+                   "bank_transactions.status"] = "bank_transactions.imported"
     items: list[dict] = Field(min_length=1, max_length=1000)
 
     def imported(self) -> list[BankTxnIn]:

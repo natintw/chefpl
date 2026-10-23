@@ -75,6 +75,12 @@ async def bank_transactions_webhook(request: Request, body: BankTxnWebhookIn, id
     """現金流系統匯入銀行簿子後呼叫。帳務系統自己比對未付應付（可一筆匯款對多家門市的單據），
     對不到的進「待確認」。同一個 cash_txn_id 重送會略過。"""
     raw = await request.body()
+    if body.event == "bank_transactions.status":  # 唯讀查詢：每次都查最新狀態，不存冪等結果
+        try:
+            ids = [i.cash_txn_id for i in body.deleted()]
+        except PydanticValidationError as e:
+            raise RequestValidationError(e.errors()) from e
+        return BankMatchService(s).status(ids)
     try:
         if body.event == "bank_transactions.deleted":
             ids = [i.cash_txn_id for i in body.deleted()]

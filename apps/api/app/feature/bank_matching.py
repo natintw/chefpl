@@ -130,6 +130,51 @@ class BankMatchService:
                 return True
         return False
 
+    # ------------------------------------------------------------------ 查詢核對狀態
+    def status(self, txn_ids: list[str]) -> dict[str, Any]:
+        """每筆交易在帳務系統的現況（現金流系統的「帳務核對」頁用）。
+
+        matched：已結清單據（自動對上、或會計在待確認確認／建立單據）
+        review：還在待確認
+        dismissed：會計在待確認按了略過（例：零用金補錢、內部調撥）
+        unknown：帳務系統沒有這筆（沒送過、被拒、或已撤回）
+        """
+        ids = list(dict.fromkeys(txn_ids))
+        sts = self.s.scalars(select(Settlement).where(Settlement.cash_txn_id.in_(ids), Settlement.reversed_at.is_(None))).all()
+        by_txn: dict[str, list[Settlement]] = {}
+        for st in sts:
+            by_txn.setdefault(st.cash_txn_id, []).append(st)
+        reviews: dict[str, ReviewItem] = {}
+        for it in self.s.scalars(select(ReviewItem).where(ReviewItem.kind == "bank_only",
+                                                          ReviewItem.ref.in_([f"cash_txn:{i}" for i in ids]))):
+            if (it.resolution or {}).get("withdrawn"):
+                continue
+            cur = reviews.get(it.ref)
+            if cur is None or it.created_at > cur.created_at:
+                reviews[it.ref] = it
+        out, counts = [], {"matched": 0, "review": 0, "dismissed": 0, "unknown": 0}
+        for txn in ids:
+            r: dict[str, Any] = {"cash_txn_id": txn}
+            if txn in by_txn:
+                docs = [st.document for st in by_txn[txn]]
+                names = sorted({d.counterparty.name for d in docs if d.counterparty})
+                manual = any(st.match_level == "manual" for st in by_txn[txn])
+                r.update(status="matched", how="manual" if manual else "auto",
+                         summary=f"{'、'.join(names) or '單據'} {len(docs)} 張" + ("（人工確認）" if manual else ""),
+                         documents=[str(d.id) for d in docs])
+            elif (rv := reviews.get(f"cash_txn:{txn}")) is not None:
+                if rv.status == "open":
+                    r.update(status="review", summary=(rv.payload or {}).get("reason") or "待確認")
+                elif rv.status == "dismissed":
+                    r.update(status="dismissed", summary="在帳務系統略過")
+                else:
+                    r.update(status="matched", how="manual", summary="已在帳務系統處理")
+            else:
+                r.update(status="unknown", summary="帳務系統沒有這筆")
+            counts[r["status"]] += 1
+            out.append(r)
+        return {**counts, "results": out}
+
     # ------------------------------------------------------------------ 刪除：撤回
     def withdraw(self, txn_ids: list[str], actor: str) -> dict[str, Any]:
         results, counts = [], {"withdrawn": 0, "not_found": 0, "needs_review": 0}

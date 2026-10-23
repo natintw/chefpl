@@ -189,3 +189,30 @@ def test_account_info_from_cashflow_is_source_of_truth(client, svc_headers):
     assert res["matched"] == 1, res
     bad = _send(client, svc_headers, _txn("NEW2", 100, **{**acct, "cash_account_id": "acc-x", "cash_account_company_id": "comp-nope"}))
     assert bad["rejected"] == 1 and "不在集團主檔" in bad["results"][0]["message"]
+
+
+def _status(client, svc_headers, *ids):
+    r = client.post(HOOK, json={"event": "bank_transactions.status", "items": [{"cash_txn_id": i} for i in ids]},
+                    headers={**svc_headers, "Idempotency-Key": str(uuid.uuid4())})
+    assert r.status_code == 200, r.text
+    return {x["cash_txn_id"]: x for x in r.json()["results"]}
+
+
+def test_status_query_reflects_latest_state(client, svc_headers):
+    """現金流的「帳務核對」頁：對上、待確認、略過、沒收到；待確認處理後狀態跟著變。"""
+    _vendor_payables(client)
+    _send(client, svc_headers, _txn("S1", 36750, counterparty_name="協昌菓菜"))
+    _send(client, svc_headers, _txn("S2", 99999, counterparty_name="協昌菓菜行"))
+    _send(client, svc_headers, _txn("S3", 8400, bank_memo="票交媒體"))
+    st = _status(client, svc_headers, "S1", "S2", "S3", "S9")
+    assert st["S1"]["status"] == "matched" and "協昌" in st["S1"]["summary"]
+    assert st["S2"]["status"] == "review" and "湊不出" in st["S2"]["summary"]
+    assert st["S3"]["status"] == "review"
+    assert st["S9"]["status"] == "unknown"
+    items = {i["payload"]["item"]["cash_txn_id"]: i for i in
+             client.get("/api/v1/review-items", params={"kind": "bank_only"}).json()["items"]}
+    client.post(f"/api/v1/review-items/{items['S2']['id']}/resolve", json={"action": "dismiss", "payload": {}})
+    client.post(f"/api/v1/review-items/{items['S3']['id']}/resolve", json={"action": "settle_suggestion", "payload": {}})
+    st = _status(client, svc_headers, "S2", "S3")
+    assert st["S2"]["status"] == "dismissed"
+    assert st["S3"]["status"] == "matched" and st["S3"]["how"] == "manual"
