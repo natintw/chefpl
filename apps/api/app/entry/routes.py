@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.db import get_ledger_session
 from app.entry import serializers as ser
 from app.entry.deps import current_user, need
-from app.entry.schemas import (BatchPeriodIn, BatchResolveIn, BatchStoreIn, BatchUnmatchIn, RelinkIn, CashPaymentIn, AccrualBatchIn, AccrualTemplateIn, CloseIn, CounterpartyIn, CounterpartyPatch,
+from app.entry.schemas import (BatchPeriodIn, BatchResolveIn, BatchStoreIn, BatchUnmatchIn, RelinkIn, AutoLinkIn, LinkApplyIn, CashPaymentIn, AccrualBatchIn, AccrualTemplateIn, CloseIn, CounterpartyIn, CounterpartyPatch,
                                DocumentCreate, DocumentPatch, LinkAccrualIn, RecognizeIn, RecurringIn, ReopenIn,
                                ResolveIn, RuleIn, VoidIn)
 from app.errors import AppError, Forbidden, NotFound, ValidationFailed
@@ -187,6 +187,44 @@ def list_documents(doc_type: str | None = None, company_id: str | None = None, s
                              "is_intercompany": l.is_intercompany} for l in d.lines]
         items.append(out)
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.post("/documents/link-plan")
+def documents_link_plan(body: BatchUnmatchIn, user: UserPrincipal = Depends(need("review.resolve")),
+                        s: Session = Depends(get_ledger_session, scope="function")):
+    """勾選的單據：銀行那幾張 ↔ POS／發票那幾張，依金額配對（只算、不寫入）。"""
+    from app.feature.bank_doc_link import BankDocLinkService
+    for doc_id in body.ids:
+        d = DocumentRepository(s).get(doc_id)
+        if d is not None:
+            _check_company(user, d.company_id)
+    return BankDocLinkService(s).plan_selected(body.ids)
+
+
+@router.post("/documents/auto-link-plan")
+def documents_auto_link_plan(body: AutoLinkIn, user: UserPrincipal = Depends(need("review.resolve")),
+                             s: Session = Depends(get_ledger_session, scope="function")):
+    """自動找「銀行建立的單據」對應的 POS／發票單據（銀行備註寫的日期、或附近同金額），只算、不寫入。"""
+    from app.feature.bank_doc_link import BankDocLinkService
+    cids = _cids(user)
+    if body.company_id:
+        _check_company(user, body.company_id)
+        dir_ = get_directory()
+        cids = {c.id for c in dir_.list_companies() if c.id == body.company_id or c.parent_company_id == body.company_id}
+    return BankDocLinkService(s).plan_auto(cids, body.store_id, body.period, body.doc_type)
+
+
+@router.post("/documents/link-apply")
+def documents_link_apply(body: LinkApplyIn, user: UserPrincipal = Depends(need("review.resolve")),
+                         s: Session = Depends(get_ledger_session, scope="function")):
+    """套用配對：每一組把銀行那筆改對到選的單據（銀行建立的那張作廢），各組獨立成功或失敗。"""
+    from app.feature.bank_doc_link import BankDocLinkService
+    for g in body.groups:
+        for doc_id in [g.bank_document_id, *g.document_ids]:
+            d = DocumentRepository(s).get(doc_id)
+            if d is not None:
+                _check_company(user, d.company_id)
+    return BankDocLinkService(s).apply([g.model_dump(mode="json") for g in body.groups], user.actor)
 
 
 @router.post("/documents/batch-unmatch")

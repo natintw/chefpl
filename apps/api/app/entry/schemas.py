@@ -269,3 +269,21 @@ class RelinkIn(BaseModel):
     difference_mode: Literal["book", "leave_open"] | None = None
     difference_category: str | None = None
     remember_account: bool = False
+
+
+class AutoLinkIn(BaseModel):
+    company_id: str | None = None
+    store_id: str | None = None
+    period: str | None = Field(None, pattern=r"^\d{4}-\d{2}$")
+    doc_type: Literal["receivable", "payable"] = "receivable"
+
+
+class LinkGroupIn(BaseModel):
+    bank_document_id: uuid.UUID
+    document_ids: list[uuid.UUID] = Field(min_length=1)
+    difference_mode: Literal["book", "leave_open"] | None = None
+    difference_category: str | None = None
+
+
+class LinkApplyIn(BaseModel):
+    groups: list[LinkGroupIn] = Field(min_length=1, max_length=500)

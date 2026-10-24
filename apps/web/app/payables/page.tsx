@@ -8,6 +8,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { DocumentDrawer, type RelinkTarget } from "@/components/DocumentDrawer";
 import { ManualMatch } from "@/components/ManualMatch";
+import { BankLinkPlan, type LinkPlan } from "@/components/BankLinkPlan";
 import { DownloadButton } from "@/components/DownloadButton";
 import { PageHeader } from "@/components/Shell";
 import { PeriodPicker, ScopePicker, useQuery } from "@/components/filters";
@@ -33,6 +34,18 @@ export default function PayablesPage() {
   const [page, setPage] = useState(1);
   const [picked, setPicked] = useState<Map<string, Doc>>(new Map());
   const [relink, setRelink] = useState<RelinkTarget | null>(null);
+  const [linkPlan, setLinkPlan] = useState<{ plan: LinkPlan; title: string } | null>(null);
+  const [planning, setPlanning] = useState(false);
+  async function planFrom(path: string, body: unknown, title: string) {
+    setPlanning(true);
+    try { setLinkPlan({ plan: await apiSend<LinkPlan>("POST", path, body), title }); window.scrollTo({ top: 0, behavior: "smooth" }); }
+    catch (e) { toast((e as Error).message || "配對失敗", "error"); } finally { setPlanning(false); }
+  }
+  const bankDoc = (d: Doc) => d.status !== "void" && !!d.bank_txn_ids?.length;
+  const pickedDocs = [...picked.values()];
+  const mixed = pickedDocs.some(bankDoc) && pickedDocs.some((d) => !bankDoc(d) && (d.outstanding || 0) > 0);
+  const relinkRow = (d: Doc) => setRelink({ doc: d, bank: { cash_txn_id: d.bank_txn_ids![0], company_id: d.company_id,
+    direction: d.doc_type === "payable" ? "out" : "in", amount: d.settle_amount || 0 } });
   const toast = useToast();
   const { companyName, storeName } = useDirectory();
   const filters = {
@@ -106,7 +119,22 @@ export default function PayablesPage() {
                 <option value="">全部</option><option value="pos">POS</option><option value="bank_only">銀行建立</option>
                 <option value="invoice,invoice_summary">發票</option><option value="manual">人工</option>
               </select></label>
+            {canPay && <button className="btn" disabled={planning} title="找出「來源：銀行」的單據對應的 POS／發票單據（依銀行備註寫的日期，或附近同金額）"
+              onClick={() => planFrom("/documents/auto-link-plan", { company_id: q.company || undefined, store_id: q.store || undefined,
+                period: q.period || undefined, doc_type: type === "payable" ? "payable" : "receivable" },
+                `自動配對：銀行建立的${TYPES[type]} ↔ ${type === "payable" ? "發票" : "POS"}單據（${q.period || "全部月份"}）`)}>
+              {planning ? "配對中…" : `自動配對銀行與${type === "payable" ? "發票" : " POS"}`}</button>}
           </div>
+          {linkPlan && <BankLinkPlan plan={linkPlan.plan} title={linkPlan.title} receivable={type !== "payable"}
+                                     onClose={() => setLinkPlan(null)} onDone={() => { setLinkPlan(null); setPicked(new Map()); refresh(); }} />}
+          {canPay && mixed && (
+            <div className="ai" style={{ margin: "12px 14px", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <span className="small">勾了 {[...picked.values()].filter(bankDoc).length} 張銀行單據和 {[...picked.values()].filter((d) => !bankDoc(d)).length} 張其他單據，
+                可以依金額連在一起（例：9/24 存入的現金 ↔ 9/23 POS 門市現金）。</span>
+              <button className="btn pri sm" disabled={planning} onClick={() => planFrom("/documents/link-plan",
+                { ids: [...picked.keys()] }, "把勾選的連在一起")}>{planning ? "配對中…" : "把勾選的連在一起"}</button>
+            </div>
+          )}
           {relink && (
             <div style={{ margin: "12px 14px", padding: "12px 14px", border: "1px solid var(--accent)", borderRadius: 10 }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
@@ -121,14 +149,14 @@ export default function PayablesPage() {
                            onDone={(msg) => { toast(`已改對應：${msg}`); setRelink(null); refresh(); }} />
             </div>
           )}
-          {canPay && [...picked.values()].some((d) => d.bank_txn_ids?.length) && (
+          {canPay && !mixed && pickedDocs.some((d) => d.bank_txn_ids?.length) && (
             <UnmatchBar docs={[...picked.values()].filter((d) => d.bank_txn_ids?.length)}
                         onDone={() => { setPicked(new Map()); refresh(); }} />
           )}
           {canPay && picked.size > 0 && (
             <StoreBar docs={[...picked.values()]} onDone={() => { setPicked(new Map()); refresh(); }} />
           )}
-          {canPay && [...picked.values()].some(payable) && (
+          {canPay && !mixed && pickedDocs.some(payable) && (
             <CashBar docs={[...picked.values()].filter(payable)} type={type} onDone={() => { setPicked(new Map()); refresh(); }}
                      onClear={() => setPicked(new Map())} />
           )}
@@ -160,7 +188,10 @@ export default function PayablesPage() {
                           <div>{d.store_ids.length ? d.store_ids.map((x) => storeName(x)).join("、") : "公司層級"}</div></td>
                         <td className="num small">{d.doc_date}</td>
                         <td className="num small">{d.invoice_nos.length ? d.invoice_nos.join(" ") : d.has_invoice ? "有" : "無發票"}</td>
-                        <td><Tag kind="src">{SOURCE_LABEL[d.source_kind] || d.source_kind}</Tag></td>
+                        <td><Tag kind="src">{SOURCE_LABEL[d.source_kind] || d.source_kind}</Tag>
+                          {d.source_kind === "bank_only" && d.bank_txn_ids?.length === 1 && d.status !== "void" &&
+                            <div><button className="btn sm" style={{ marginTop: 4, minHeight: 26, padding: "0 8px" }}
+                                         onClick={(e) => { e.stopPropagation(); relinkRow(d); window.scrollTo({ top: 0, behavior: "smooth" }); }}>改對應</button></div>}</td>
                         <td className="num small">{d.due_date || "—"}</td>
                         <td className="num small">{d.settled_dates?.length
                           ? <>{d.settled_dates[d.settled_dates.length - 1]}{d.settled_dates.length > 1 && <div className="small">共 {d.settled_dates.length} 次</div>}</>
