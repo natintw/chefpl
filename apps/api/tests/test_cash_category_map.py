@@ -43,3 +43,11 @@ def test_vendor_category_beats_cashflow_category(client, svc_headers):
     g = _sugg(client)["T-PUR"]
     assert g["suggested_category_code"] == "C01" and "廠商類別" in g["suggestion_source"]
     assert d["id"]
+
+
+def test_vat_counts_in_pl_and_lease_split(client):
+    cats = {c["code"]: c for c in client.get("/api/v1/settings/categories").json()["items"]}
+    assert cats["B06"]["nature"] == "expense" and cats["B06"]["pl_section"] == "opex"
+    rows = {r["cash_code"]: r for r in client.get("/api/v1/settings/cash-category-map").json()["items"]}
+    assert rows["EXP_LEA"]["ledger_category_code"] == "O01" and "店租" in rows["EXP_LEA"]["cash_name"]
+    assert rows["FIN_LOAN"]["ledger_category_code"] == "B02" and rows["EXP_TAX"]["ledger_category_code"] == "B06"
