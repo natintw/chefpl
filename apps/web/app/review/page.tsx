@@ -124,6 +124,9 @@ function Card({ it, onDone, embedded }: { it: ReviewItem; onDone: () => void; em
         </div>
       )}
       {it.kind === "bank_only" && p.reason && <p className="small" style={{ margin: 0 }}>系統比對結果：{p.reason}</p>}
+      {it.kind === "bank_only" && bank?.direction === "in" && (
+        <p className="small warnv" style={{ margin: 0 }}>收入：門市營收若已由 POS 匯入，請按「手動核對」對到 POS 的應收（信用卡、現金…），
+          不要「建立已結清單據」記成營收，否則營收會重複。{cat.startsWith("R") ? "目前選的是營收類別。" : ""}</p>)}
       {it.kind === "bank_only" && it.suggestion_source && (
         <p className="small" style={{ margin: 0 }}>預設類別依{it.suggestion_source}：{it.suggested_category_code} {categoryName(it.suggested_category_code || "")}
           {it.suggested_period_mode === "prev" ? "，損益記上個月" : ""}（可以改）</p>)}

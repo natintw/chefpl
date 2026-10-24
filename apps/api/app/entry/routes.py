@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.db import get_ledger_session
 from app.entry import serializers as ser
 from app.entry.deps import current_user, need
-from app.entry.schemas import (BatchPeriodIn, BatchResolveIn, BatchStoreIn, CashPaymentIn, AccrualBatchIn, AccrualTemplateIn, CloseIn, CounterpartyIn, CounterpartyPatch,
+from app.entry.schemas import (BatchPeriodIn, BatchResolveIn, BatchStoreIn, BatchUnmatchIn, RelinkIn, CashPaymentIn, AccrualBatchIn, AccrualTemplateIn, CloseIn, CounterpartyIn, CounterpartyPatch,
                                DocumentCreate, DocumentPatch, LinkAccrualIn, RecognizeIn, RecurringIn, ReopenIn,
                                ResolveIn, RuleIn, VoidIn)
 from app.errors import AppError, Forbidden, NotFound, ValidationFailed
@@ -187,6 +187,30 @@ def list_documents(doc_type: str | None = None, company_id: str | None = None, s
                              "is_intercompany": l.is_intercompany} for l in d.lines]
         items.append(out)
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.post("/documents/batch-unmatch")
+def documents_batch_unmatch(body: BatchUnmatchIn, user: UserPrincipal = Depends(need("review.resolve")),
+                            s: Session = Depends(get_ledger_session, scope="function")):
+    """取消核對：勾選的單據背後的銀行交易送回待確認（銀行建立的單據作廢、被結清的單據回到未收／未付）。"""
+    from app.feature.manual_match import UnmatchService
+    for doc_id in body.ids:
+        d = DocumentRepository(s).get(doc_id)
+        if d is not None:
+            _check_company(user, d.company_id)
+    return UnmatchService(s).unmatch_documents(body.ids, user.actor)
+
+
+@router.post("/documents/{doc_id}/relink")
+def document_relink(doc_id: uuid.UUID, body: RelinkIn, user: UserPrincipal = Depends(need("review.resolve")),
+                    s: Session = Depends(get_ledger_session, scope="function")):
+    """改對應：這張單據背後的銀行交易改對到其他單據（例：銀行入款改對 POS 的信用卡應收），差額照手動核對處理。"""
+    from app.feature.manual_match import UnmatchService
+    d = DocumentRepository(s).get(doc_id)
+    if d is None:
+        raise NotFound("單據不存在")
+    _check_company(user, d.company_id)
+    return UnmatchService(s).relink(doc_id, body.model_dump(exclude_none=True), user.actor)
 
 
 @router.get("/documents/export")

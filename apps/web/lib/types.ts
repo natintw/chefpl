@@ -43,7 +43,8 @@ export type Doc = {
   doc_date: string; invoice_nos: string[]; has_invoice: boolean; settle_amount: number | null; settled_amount: number;
   tax_amount: number; outstanding: number | null; settle_status: string; settled_by: string | null; due_date: string | null;
   status: string; memo: string | null; store_ids: string[]; period_keys: string[]; version: number;
-  lines?: DocLine[]; settlements?: { cash_txn_id: string; cash_account_id: string; txn_date: string; amount: number;
+  settled_dates?: string[]; bank_txn_ids?: string[];
+  lines?: DocLine[]; settlements?: { cash_txn_id: string; cash_account_id: string; txn_date: string; amount: number; bank_amount?: number | null;
     match_level: string; reversed: boolean ; kind?: "cash" | "bank"; note?: string | null; created_by?: string | null }[];
 };
 

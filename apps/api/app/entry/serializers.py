@@ -6,6 +6,10 @@ from typing import Any
 from app.feature.models import Document
 
 
+def _bank_txn(ref: str) -> str:
+    return ref[4:] if ref.startswith("adj:") else ref
+
+
 def document(d: Document, detail: bool = True) -> dict[str, Any]:
     out: dict[str, Any] = {
         "id": str(d.id), "doc_type": d.doc_type, "source_kind": d.source_kind, "source_ref": d.source_ref,
@@ -19,6 +23,12 @@ def document(d: Document, detail: bool = True) -> dict[str, Any]:
         "due_date": d.due_date.isoformat() if d.due_date else None, "status": d.status, "memo": d.memo,
         "store_ids": sorted({l.store_id for l in d.lines if l.store_id}),
         "period_keys": sorted({l.period_key for l in d.lines}), "version": d.version,
+        # 收付款日：銀行入款／付款日、現金收付日（未沖回的）；bank_txn_ids 用來「取消核對／改對應」
+        "settled_dates": sorted({st.txn_date.isoformat() for st in d.settlements if st.reversed_at is None}),
+        "bank_txn_ids": sorted({_bank_txn(st.cash_txn_id) for st in d.settlements
+                                if st.reversed_at is None and not st.cash_txn_id.startswith("cash-")}
+                               | ({_bank_txn(d.source_ref)} if d.source_kind == "bank_only" and d.source_ref
+                                  and d.status != "void" else set())),
     }
     if detail:
         out.update({
@@ -26,7 +36,8 @@ def document(d: Document, detail: bool = True) -> dict[str, Any]:
                        "category_code": l.category_code, "amount": l.amount, "description": l.description,
                        "is_intercompany": l.is_intercompany} for l in d.lines],
             "settlements": [{"cash_txn_id": s.cash_txn_id, "cash_account_id": s.cash_account_id,
-                             "txn_date": s.txn_date.isoformat(), "amount": s.amount, "match_level": s.match_level,
+                             "txn_date": s.txn_date.isoformat(), "amount": s.amount, "bank_amount": s.bank_amount,
+                             "match_level": s.match_level,
                              "reversed": s.reversed_at is not None, "note": s.note, "created_by": s.created_by,
                              "kind": "cash" if s.cash_txn_id.startswith("cash-") else "bank"} for s in d.settlements],
             "accrual_mode": d.accrual_mode,

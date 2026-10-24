@@ -21,8 +21,10 @@ type Vendor = { key: string; name: string; months: Month[]; sum: number; count: 
 const monthOf = (d: Doc) => d.period_keys.join("、") || d.doc_date.slice(0, 7);
 const owe = (d: Doc) => d.outstanding || 0;
 
-export function ManualMatch({ reviewId, bank, preselect, hint, onDone }: {
+export function ManualMatch({ reviewId, bank, preselect, hint, onDone, relinkDocId }: {
   reviewId: string; bank: Bank; preselect: string[]; hint?: string | null; onDone: (msg: string) => void;
+  /** 改對應：這張單據背後的銀行交易改對到新勾選的單據（POST /documents/{id}/relink） */
+  relinkDocId?: string;
 }) {
   const { dir, companyName, storeName, categories } = useDirectory();
   // 同一法人：總公司（含分公司）
@@ -117,9 +119,10 @@ export function ManualMatch({ reviewId, bank, preselect, hint, onDone }: {
   async function submit() {
     setBusy(true); setErr(null);
     try {
-      await apiSend("POST", `/review-items/${reviewId}/resolve`, { action: "manual_match", payload: {
-        document_ids: [...picked.keys()], difference_mode: diff ? effMode : undefined,
-        difference_category: diff && effMode === "book" ? cat : undefined, remember_account: remember } });
+      const payload = { document_ids: [...picked.keys()], difference_mode: diff ? effMode : undefined,
+        difference_category: diff && effMode === "book" ? cat : undefined, remember_account: remember };
+      if (relinkDocId) await apiSend("POST", `/documents/${relinkDocId}/relink`, payload);
+      else await apiSend("POST", `/review-items/${reviewId}/resolve`, { action: "manual_match", payload });
       onDone(`已核對 ${picked.size} 張${diff ? `，差額 ${money(Math.abs(diff))} ${effMode === "book" ? "已記帳" : "留著未" + (out ? "付" : "收")}` : ""}`);
     } catch (e) { setErr(e as ApiError); } finally { setBusy(false); }
   }
@@ -286,7 +289,7 @@ export function ManualMatch({ reviewId, bank, preselect, hint, onDone }: {
           )}
         </div>
       )}
-      {out && bank.counterparty_account_no && (
+      {out && !relinkDocId && bank.counterparty_account_no && (
         <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}>
           <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} style={{ width: 18, minHeight: 18 }} />
           記住對方帳號 {bank.counterparty_account_no} 是這家廠商（原本記在別家的會改過來）

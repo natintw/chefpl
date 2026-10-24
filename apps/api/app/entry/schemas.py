@@ -258,3 +258,14 @@ class CashPaymentIn(BaseModel):
     source: Literal["petty_cash", "store_cash", "advance"] = "petty_cash"
     note: str | None = Field(default=None, max_length=200)
     amount: int | None = Field(default=None, gt=0)
+
+
+class BatchUnmatchIn(BaseModel):
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+
+
+class RelinkIn(BaseModel):
+    document_ids: list[str] = Field(min_length=1)
+    difference_mode: Literal["book", "leave_open"] | None = None
+    difference_category: str | None = None
+    remember_account: bool = False

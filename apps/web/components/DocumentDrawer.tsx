@@ -9,7 +9,13 @@ import { ErrorBox, Skeleton, Tag, useToast } from "./ui";
 
 const CASH_SOURCE: Record<string, string> = { "cash:petty_cash": "零用金", "cash:store_cash": "門市收銀", "cash:advance": "老闆／員工代墊" };
 
-export function DocumentDrawer({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged?: () => void }) {
+export type RelinkTarget = { doc: Doc; bank: { cash_txn_id: string; company_id: string; direction: "out" | "in"; amount: number } };
+
+export function DocumentDrawer({ id, onClose, onChanged, onRelink }: {
+  id: string; onClose: () => void; onChanged?: () => void;
+  /** 有給才顯示「改對應單據」：由頁面開一個寬的手動核對區 */
+  onRelink?: (t: RelinkTarget) => void;
+}) {
   const { data: d, error, loading, reload } = useApi<Doc>(`/documents/${id}`);
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -20,6 +26,22 @@ export function DocumentDrawer({ id, onClose, onChanged }: { id: string; onClose
       toast(r.reopened_documents.length > 1 ? `已取消這筆現金付款（${r.reopened_documents.length} 張單據一起回到未付）` : "已取消這筆現金付款");
       reload(); onChanged?.();
     } catch (e) { toast((e as Error).message || "取消失敗", "error"); } finally { setBusy(false); }
+  }
+  async function unmatch() {
+    setBusy(true);
+    try {
+      const r = await apiSend<{ reopened: number; failed: { message: string }[] }>("POST", "/documents/batch-unmatch", { ids: [id] });
+      if (r.failed.length) toast(r.failed[0].message, "error");
+      else toast("已取消核對，銀行交易送回「待確認」");
+      reload(); onChanged?.();
+    } catch (e) { toast((e as Error).message || "取消失敗", "error"); } finally { setBusy(false); }
+  }
+  function relinkTarget(): RelinkTarget | null {
+    if (!d || d.status === "void" || (d.bank_txn_ids || []).length !== 1) return null;
+    const txn = d.bank_txn_ids![0];
+    const sts = (d.settlements || []).filter((s) => s.cash_txn_id === txn && !s.reversed);
+    const amount = sts.find((s) => s.bank_amount)?.bank_amount || sts.reduce((a, s) => a + s.amount, 0) || d.settle_amount || 0;
+    return { doc: d, bank: { cash_txn_id: txn, company_id: d.company_id, direction: d.doc_type === "payable" ? "out" : "in", amount } };
   }
   const { storeName, categoryName, companyName } = useDirectory();
   return (
@@ -44,6 +66,18 @@ export function DocumentDrawer({ id, onClose, onChanged }: { id: string; onClose
             {d.counterparty?.is_intercompany && <Tag>集團內</Tag>}
           </div>
           {d.memo && <div className="sub">{d.memo}</div>}
+          {d.status !== "void" && !!d.bank_txn_ids?.length && (
+            <div className="ai" style={{ display: "grid", gap: 8 }}>
+              <div className="small">{d.source_kind === "bank_only"
+                ? "這張是由銀行交易直接建立的。如果同一筆錢已經有 POS 或發票的單據（例：刷卡入帳、現金存入），請改對應到那些單據，避免重複計算。"
+                : "這張單據由銀行交易結清。對錯了可以取消核對，銀行交易會回到「待確認」重新對應。"}</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {onRelink && relinkTarget() && <button className="btn pri sm" disabled={busy} onClick={() => onRelink(relinkTarget()!)}>
+                  改對應單據{d.doc_type !== "payable" ? "（例：POS 應收）" : ""}</button>}
+                <button className="btn sm" disabled={busy} onClick={unmatch}>取消核對，送回待確認</button>
+              </div>
+            </div>
+          )}
           <div className="kv">
             {d.settle_amount !== null && <div><div className="k">應付／應收（含稅）</div><div className="num">{money(d.settle_amount, { zeroDash: false })}</div></div>}
             {d.settle_amount !== null && <div><div className="k">未結清</div><div className="num">{money(d.outstanding, { zeroDash: false })}</div></div>}

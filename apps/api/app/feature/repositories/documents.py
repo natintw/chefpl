@@ -62,7 +62,7 @@ class DocumentRepository:
         if settle_status:
             conds.append(Document.settle_status.in_(settle_status.split(",")))
         if source_kind:
-            conds.append(Document.source_kind == source_kind)
+            conds.append(Document.source_kind.in_(source_kind.split(",")))
         conds.append(Document.status == status if status else Document.status != "void")
         if due_before:
             conds.append(Document.due_date <= due_before)

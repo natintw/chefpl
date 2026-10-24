@@ -165,3 +165,125 @@ class ManualMatchService:
         if key not in (cp.bank_accounts or []):
             cp.bank_accounts = [*(cp.bank_accounts or []), key]
         return f"{cp.name}：帳號末 5 碼 {key}"
+
+
+class UnmatchService:
+    """取消核對：把一筆銀行交易「送回待確認」，讓會計重新對應。
+
+    用在：銀行入款先被建成一張「銀行」來源的應收（已收），後來 POS 匯入了同一筆營收，金額重複；
+    或是對錯單據。做法：
+      1. 這筆交易（含差額 adj:）的結清全部沖回 → 原單據回到未收／未付
+      2. 由這筆交易建立的單據（來源＝銀行）作廢；所在月份已關帳就不動、回錯誤
+      3. 原本的待確認重新打開（沒有的話用結清資料新開一筆）
+    relink：送回待確認後，馬上用手動核對對到新選的單據（例：POS 的信用卡、現金應收），差額照手動核對規則處理。
+    全部在同一個交易裡，任何一步失敗都不會留下半套。
+    """
+
+    def __init__(self, session: Session):
+        self.s = session
+        self.posting = PostingService(session)
+        self.docs = self.posting.docs
+        self.dir = get_directory()
+        from app.feature.repositories.ops import OpsRepository
+        self.ops = OpsRepository(session)
+
+    def txns_of(self, doc: Document) -> list[str]:
+        out = {st.cash_txn_id[4:] if st.cash_txn_id.startswith("adj:") else st.cash_txn_id
+               for st in doc.settlements if st.reversed_at is None and not st.cash_txn_id.startswith("cash-")}
+        if doc.source_kind == "bank_only" and doc.source_ref and doc.status != "void":
+            out.add(doc.source_ref[4:] if doc.source_ref.startswith("adj:") else doc.source_ref)
+        return sorted(out)
+
+    def reopen(self, txn: str, actor: str):
+        from datetime import datetime, timezone
+        from app.feature.models import ReviewItem
+        now = datetime.now(timezone.utc)
+        sts = list(self.s.scalars(select(Settlement).where(Settlement.cash_txn_id.in_((txn, adj_ref(txn))),
+                                                           Settlement.reversed_at.is_(None))))
+        made = list(self.s.scalars(select(Document).where(Document.source_kind == "bank_only",
+                                                          Document.source_ref.in_((txn, adj_ref(txn))),
+                                                          Document.status != "void")))
+        for doc in made:
+            closed = sorted(p for p in {l.period_key for l in doc.lines} if self.ops.is_closed(doc.company_id, p))
+            if closed:
+                raise ValidationFailed(f"由這筆銀行交易建立的單據在 {'、'.join(closed)}，已關帳，請先重開月結")
+        bank_sts = [st for st in sts if st.cash_txn_id == txn]
+        sample = bank_sts[0] if bank_sts else None
+        review = self.s.scalar(select(ReviewItem).where(ReviewItem.kind == "bank_only", ReviewItem.ref == f"cash_txn:{txn}")
+                               .order_by(ReviewItem.created_at.desc()).limit(1))
+        if review is None and sample is None:
+            raise ValidationFailed("找不到這筆銀行交易的核對紀錄")
+        if review is not None and (review.resolution or {}).get("withdrawn"):
+            raise ValidationFailed("這筆銀行交易已在現金流系統刪除，不能重新對應")
+        # 1) 結清沖回
+        touched = []
+        for st in sts:
+            st.reversed_at = now
+            st.note = ((st.note or "") + f"；取消核對（{actor}）").lstrip("；")
+            touched.append(st.document_id)
+        self.s.flush()
+        for doc_id in dict.fromkeys(touched):
+            d = self.docs.get(doc_id)
+            self.s.refresh(d)
+            self.posting.recompute_settlement(d)
+        # 2) 由這筆交易建立的單據作廢
+        voided = []
+        for doc in made:
+            self.posting.void(doc.id, "取消核對：銀行交易改對應其他單據", actor, force=True)
+            voided.append(str(doc.id))
+        # 3) 待確認重新打開
+        if review is not None:
+            if review.status != "open":
+                review.resolution = {"reopened": True, "reopened_by": actor, "previous": review.resolution}
+                review.status, review.resolved_by, review.resolved_at = "open", None, None
+        else:
+            d0 = sample.document
+            acct = self.dir.get_bank_account(sample.cash_account_id)
+            item = {"cash_txn_id": txn, "cash_account_id": sample.cash_account_id, "txn_date": sample.txn_date.isoformat(),
+                    "direction": "out" if d0.doc_type == "payable" else "in",
+                    "amount": int(sample.bank_amount or sum(st.amount for st in bank_sts)),
+                    "bank_memo": "（取消核對後重開）", "company_id": acct.company_id if acct else d0.company_id}
+            review = self.ops.open_review("bank_only", item["company_id"], f"cash_txn:{txn}",
+                                          {"item": item, "reason": "取消核對，請重新對應", "suggestion": None},
+                                          period_key=item["txn_date"][:7])
+        self.s.flush()
+        return review, {"cash_txn_id": txn, "review_id": str(review.id),
+                        "reopened_documents": [str(i) for i in dict.fromkeys(touched)], "voided_documents": voided}
+
+    def unmatch_documents(self, doc_ids: list[uuid.UUID], actor: str) -> dict[str, Any]:
+        results, failed, seen = [], [], set()
+        for doc_id in doc_ids:
+            doc = self.docs.get(doc_id)
+            if doc is None:
+                failed.append({"id": str(doc_id), "message": "單據不存在"})
+                continue
+            txns = self.txns_of(doc)
+            if not txns:
+                failed.append({"id": str(doc_id), "message": "這張單據沒有銀行核對紀錄"})
+                continue
+            for txn in txns:
+                if txn in seen:
+                    continue
+                seen.add(txn)
+                sp = self.s.begin_nested()
+                try:
+                    _, r = self.reopen(txn, actor)
+                    sp.commit()
+                    results.append(r)
+                except ValidationFailed as e:
+                    sp.rollback()
+                    failed.append({"id": str(doc_id), "message": e.message})
+        return {"reopened": len(results), "results": results, "failed": failed}
+
+    def relink(self, doc_id: uuid.UUID, payload: dict[str, Any], actor: str) -> dict[str, Any]:
+        doc = self.docs.get(doc_id)
+        if doc is None:
+            raise ValidationFailed("單據不存在")
+        txns = self.txns_of(doc)
+        if len(txns) != 1:
+            raise ValidationFailed("這張單據對到不只一筆銀行交易，請用「取消核對」送回待確認後逐筆處理"
+                                   if txns else "這張單據沒有銀行核對紀錄")
+        review, info = self.reopen(txns[0], actor)
+        from app.feature.review import ReviewService
+        res = ReviewService(self.s).resolve(review.id, "manual_match", payload, actor)
+        return {**info, **res}

@@ -6,7 +6,8 @@
  */
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { DocumentDrawer } from "@/components/DocumentDrawer";
+import { DocumentDrawer, type RelinkTarget } from "@/components/DocumentDrawer";
+import { ManualMatch } from "@/components/ManualMatch";
 import { DownloadButton } from "@/components/DownloadButton";
 import { PageHeader } from "@/components/Shell";
 import { PeriodPicker, ScopePicker, useQuery } from "@/components/filters";
@@ -27,13 +28,17 @@ export default function PayablesPage() {
   const type = (q.get("type") as T) || "payable";
   const [status, setStatus] = useState("");
   const [search, setSearch] = useState("");
+  const [source, setSource] = useState("");
   const [docId, setDocId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [picked, setPicked] = useState<Map<string, Doc>>(new Map());
+  const [relink, setRelink] = useState<RelinkTarget | null>(null);
+  const toast = useToast();
   const { companyName, storeName } = useDirectory();
   const filters = {
     doc_type: type, period: type === "advance_receipt" ? undefined : q.period, company_id: q.company || undefined,
     store_id: q.store || undefined, settle_status: status || undefined, q: search || undefined,
+    source_kind: source || undefined,
   };
   const fkey = JSON.stringify(filters);
   useEffect(() => { setPage(1); setPicked(new Map()); }, [fkey]);  // 篩選改了回到第一頁、清掉勾選
@@ -43,7 +48,7 @@ export default function PayablesPage() {
   const items = list.data?.items || [];
   const sm = summary.data;
   const pages = Math.max(1, Math.ceil((list.data?.total || 0) / PAGE));
-  const filtered = !!(status || search || q.store);
+  const filtered = !!(status || search || q.store || source);
   const canPay = type !== "advance_receipt";
   const payable = (d: Doc) => d.status !== "void" && (d.outstanding || 0) > 0;
   const selectable = (d: Doc) => d.status !== "void";   // 改門市：已付的也可以選；現金付款只處理未結清的
@@ -96,7 +101,30 @@ export default function PayablesPage() {
                 <option value="">全部</option><option value="open,partial">未結清（含部分）</option><option value="open">完全未付</option>
                 <option value="partial">部分</option><option value="settled">已結清</option>
               </select></label>
+            <label className="ctl"><span className="k">來源</span>
+              <select value={source} onChange={(e) => setSource(e.target.value)}>
+                <option value="">全部</option><option value="pos">POS</option><option value="bank_only">銀行建立</option>
+                <option value="invoice,invoice_summary">發票</option><option value="manual">人工</option>
+              </select></label>
           </div>
+          {relink && (
+            <div style={{ margin: "12px 14px", padding: "12px 14px", border: "1px solid var(--accent)", borderRadius: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+                <div><strong>改對應單據</strong>
+                  <div className="small">銀行 {relink.bank.direction === "in" ? "入款" : "付款"} {money(relink.bank.amount)}
+                    （{relink.doc.doc_date}，原本是「{relink.doc.counterparty?.name || relink.doc.memo || "單據"}」）。勾選要改對到的單據，例如 POS 匯入的信用卡、現金應收；
+                    確認後原本{relink.doc.source_kind === "bank_only" ? "由銀行建立的這張會作廢" : "的結清會取消"}，差額照下方選擇處理。</div></div>
+                <button className="btn sm" onClick={() => setRelink(null)}>取消</button>
+              </div>
+              <ManualMatch reviewId="" relinkDocId={relink.doc.id} preselect={[]}
+                           bank={{ ...relink.bank, counterparty_account_no: null }}
+                           onDone={(msg) => { toast(`已改對應：${msg}`); setRelink(null); refresh(); }} />
+            </div>
+          )}
+          {canPay && [...picked.values()].some((d) => d.bank_txn_ids?.length) && (
+            <UnmatchBar docs={[...picked.values()].filter((d) => d.bank_txn_ids?.length)}
+                        onDone={() => { setPicked(new Map()); refresh(); }} />
+          )}
           {canPay && picked.size > 0 && (
             <StoreBar docs={[...picked.values()]} onDone={() => { setPicked(new Map()); refresh(); }} />
           )}
@@ -108,14 +136,15 @@ export default function PayablesPage() {
           {list.error && <div className="pad"><ErrorBox error={list.error} onRetry={list.reload} /></div>}
           {list.data && items.length === 0 && (
             <Empty title={filtered ? "沒有符合的單據" : `${q.period} 沒有${TYPES[type]}單據`}
-                   action={filtered ? <button className="btn" onClick={() => { setStatus(""); setSearch(""); q.set({ store: null }); }}>清除篩選</button> : undefined} />
+                   action={filtered ? <button className="btn" onClick={() => { setStatus(""); setSearch(""); setSource(""); q.set({ store: null }); }}>清除篩選</button> : undefined} />
           )}
           {items.length > 0 && (
             <div className="tbl-wrap">
               <table>
                 <thead><tr>{canPay && <th style={{ width: 36 }}>
                   <input type="checkbox" aria-label="全選這一頁的單據" checked={allPicked} disabled={!pageOpen.length}
-                         onChange={toggleAll} style={{ width: 18, minHeight: 18 }} /></th>}<th>對象</th><th>公司／門市</th><th>發票</th><th>來源</th><th>到期日</th><th className="r">金額</th><th className="r">已結清</th><th className="r">未結清</th><th>狀態</th></tr></thead>
+                         onChange={toggleAll} style={{ width: 18, minHeight: 18 }} /></th>}<th>對象</th><th>公司／門市</th><th>{type === "payable" ? "單據日期" : "營業／單據日期"}</th><th>發票</th><th>來源</th><th>到期日</th>
+                  <th>{type === "payable" ? "付款日" : "入款日"}</th><th className="r">金額</th><th className="r">已結清</th><th className="r">未結清</th><th>狀態</th></tr></thead>
                 <tbody>
                   {items.map((d) => {
                     const [label, cls] = settleLabel(d.settle_status, d.doc_type);
@@ -129,9 +158,13 @@ export default function PayablesPage() {
                           <div className="small">{d.memo || d.period_keys.join("、")}{d.status === "draft" ? "・草稿" : ""}</div></td>
                         <td className="small">{q.company ? "" : <div>{companyName(d.company_id)}</div>}
                           <div>{d.store_ids.length ? d.store_ids.map((x) => storeName(x)).join("、") : "公司層級"}</div></td>
+                        <td className="num small">{d.doc_date}</td>
                         <td className="num small">{d.invoice_nos.length ? d.invoice_nos.join(" ") : d.has_invoice ? "有" : "無發票"}</td>
                         <td><Tag kind="src">{SOURCE_LABEL[d.source_kind] || d.source_kind}</Tag></td>
-                        <td className="num">{d.due_date || "—"}</td>
+                        <td className="num small">{d.due_date || "—"}</td>
+                        <td className="num small">{d.settled_dates?.length
+                          ? <>{d.settled_dates[d.settled_dates.length - 1]}{d.settled_dates.length > 1 && <div className="small">共 {d.settled_dates.length} 次</div>}</>
+                          : "—"}</td>
                         <td className="num r">{money(d.settle_amount)}</td>
                         <td className="num r">{money(d.settled_amount)}</td>
                         <td className="num r">{money(d.outstanding)}</td>
@@ -139,7 +172,7 @@ export default function PayablesPage() {
                       </tr>
                     );
                   })}
-                  {sm && <tr className="sum"><td colSpan={canPay ? 6 : 5}>全部 {sm.count} 筆合計</td><td className="num r">{money(sm.total)}</td>
+                  {sm && <tr className="sum"><td colSpan={canPay ? 8 : 7}>全部 {sm.count} 筆合計</td><td className="num r">{money(sm.total)}</td>
                     <td className="num r">{money(sm.settled)}</td><td className="num r">{money(sm.outstanding)}</td><td /></tr>}
                 </tbody>
               </table>
@@ -154,7 +187,8 @@ export default function PayablesPage() {
             </div>
           )}
         </section>
-        {docId && <DocumentDrawer id={docId} onClose={() => setDocId(null)} onChanged={refresh} />}
+        {docId && <DocumentDrawer id={docId} onClose={() => setDocId(null)} onChanged={refresh}
+                                  onRelink={(t) => { setRelink(t); setDocId(null); window.scrollTo({ top: 0, behavior: "smooth" }); }} />}
       </div>
     </>
   );
@@ -256,6 +290,33 @@ function StoreBar({ docs, onDone }: { docs: Doc[]; onDone: () => void }) {
       <label className="ctl" style={{ marginLeft: 12 }}><span className="k">改損益月份</span>
         <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label>
       <button className="btn" disabled={busy || !month} onClick={goPeriod}>{busy ? "處理中…" : "改月份"}</button>
+    </div>
+  );
+}
+
+/** 勾選含銀行核對的單據：取消核對，銀行交易送回「待確認」（由銀行建立的單據作廢、被結清的單據回到未收／未付）。 */
+function UnmatchBar({ docs, onDone }: { docs: Doc[]; onDone: () => void }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [sure, setSure] = useState(false);
+  const made = docs.filter((d) => d.source_kind === "bank_only").length;
+  async function go() {
+    setBusy(true);
+    try {
+      const r = await apiSend<{ reopened: number; failed: { id: string; message: string }[] }>("POST", "/documents/batch-unmatch",
+        { ids: docs.map((d) => d.id) });
+      toast(`已送回待確認 ${r.reopened} 筆銀行交易${r.failed.length ? `；${r.failed.length} 張沒處理：${r.failed[0].message}` : ""}`,
+            r.failed.length ? "error" : undefined);
+      onDone();
+    } catch (e) { toast((e as Error).message || "失敗", "error"); } finally { setBusy(false); setSure(false); }
+  }
+  return (
+    <div className="ai" style={{ margin: "12px 14px", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+      <span className="small">勾選中有 {docs.length} 張由銀行交易核對{made ? `（其中 ${made} 張是銀行直接建立的）` : ""}。
+        金額跟 POS 重複、或對錯單據時，可以取消核對，銀行交易回到「待確認」重新對應。</span>
+      {!sure ? <button className="btn sm" disabled={busy} onClick={() => setSure(true)}>取消核對，送回待確認</button>
+        : <><button className="btn sm pri" disabled={busy} onClick={go}>{busy ? "處理中…" : `確定送回 ${docs.length} 張`}</button>
+            <button className="btn sm" disabled={busy} onClick={() => setSure(false)}>先不要</button></>}
     </div>
   );
 }
