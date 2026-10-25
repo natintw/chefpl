@@ -34,19 +34,37 @@ export function BankLinkPlan({ plan, title, receivable, onDone, onClose }: {
   const cats = useMemo(() => categories.filter((c) => c.nature === "expense" || c.nature === "income"), [categories]);
   const verb = receivable ? "收" : "付";
 
+  const [progress, setProgress] = useState<string | null>(null);
+  const [failures, setFailures] = useState<{ label: string; message: string }[]>([]);
+
+  // 一次送 3 組：正式環境資料庫在遠端，一次送太多會超過連線時間（畫面只會看到「系統暫時無法服務」）
   async function apply() {
-    setBusy(true); setErr(null);
+    setBusy(true); setErr(null); setFailures([]);
+    const groups = chosen.map((g) => ({
+      bank_document_id: g.bank_document.id, document_ids: g.documents.map((d) => d.id),
+      ...(g.difference > 0 ? { difference_mode: "book", difference_category: overCat }
+        : g.difference < 0 ? { difference_mode: mode, difference_category: mode === "book" ? cat : undefined } : {}),
+    }));
+    const label = (id: string) => { const g = chosen.find((x) => x.bank_document.id === id); return g ? `${g.bank_document.date} ${money(g.bank_document.amount)}` : id; };
+    let linked = 0;
+    const failed: { label: string; message: string }[] = [];
     try {
-      const r = await apiSend<{ linked: number; failed: { message: string }[] }>("POST", "/documents/link-apply", {
-        groups: chosen.map((g) => ({
-          bank_document_id: g.bank_document.id, document_ids: g.documents.map((d) => d.id),
-          ...(g.difference > 0 ? { difference_mode: "book", difference_category: overCat }
-            : g.difference < 0 ? { difference_mode: mode, difference_category: mode === "book" ? cat : undefined } : {}),
-        })) });
-      toast(`已連結 ${r.linked} 組${r.failed.length ? `；${r.failed.length} 組失敗：${r.failed[0].message}` : ""}`,
-            r.failed.length ? "error" : undefined);
-      onDone();
-    } catch (e) { setErr(e as ApiError); } finally { setBusy(false); }
+      for (let i = 0; i < groups.length; i += 3) {
+        setProgress(`處理中 ${Math.min(i + 3, groups.length)} / ${groups.length}`);
+        const part = groups.slice(i, i + 3);
+        try {
+          const r = await apiSend<{ linked: number; failed: { bank_document_id: string; message: string }[] }>(
+            "POST", "/documents/link-apply", { groups: part });
+          linked += r.linked;
+          r.failed.forEach((f) => failed.push({ label: label(f.bank_document_id), message: f.message }));
+        } catch (e) {
+          part.forEach((g) => failed.push({ label: label(g.bank_document_id), message: (e as Error).message || "失敗" }));
+        }
+      }
+      setFailures(failed);
+      toast(`已連結 ${linked} 組${failed.length ? `；${failed.length} 組沒成功，原因列在下方` : ""}`, failed.length ? "error" : undefined);
+      if (!failed.length) onDone();
+    } finally { setBusy(false); setProgress(null); }
   }
 
   return (
@@ -101,8 +119,14 @@ export function BankLinkPlan({ plan, title, receivable, onDone, onClose }: {
         </div>
       )}
       <FieldErrors error={err} />
+      {failures.length > 0 && (
+        <div className="small neg" style={{ display: "grid", gap: 2 }}>
+          <div>沒成功的組（其他組已完成；重新按「自動配對」會只列出還沒連結的）：</div>
+          {failures.map((f, i) => <div key={i}>・{f.label}：{f.message}</div>)}
+          <div><button className="btn sm" onClick={onDone}>重新整理清單</button></div>
+        </div>)}
       {plan.groups.length > 0 && <div><button className="btn pri" disabled={busy || !chosen.length} onClick={apply}>
-        {busy ? "處理中…" : `連結這 ${chosen.length} 組`}</button></div>}
+        {busy ? (progress || "處理中…") : `連結這 ${chosen.length} 組`}</button></div>}
     </div>
   );
 }

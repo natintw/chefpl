@@ -334,10 +334,14 @@ function UnmatchBar({ docs, onDone }: { docs: Doc[]; onDone: () => void }) {
   async function go() {
     setBusy(true);
     try {
-      const r = await apiSend<{ reopened: number; failed: { id: string; message: string }[] }>("POST", "/documents/batch-unmatch",
-        { ids: docs.map((d) => d.id) });
-      toast(`已送回待確認 ${r.reopened} 筆銀行交易${r.failed.length ? `；${r.failed.length} 張沒處理：${r.failed[0].message}` : ""}`,
-            r.failed.length ? "error" : undefined);
+      let reopened = 0; const failed: { id: string; message: string }[] = [];
+      for (let i = 0; i < docs.length; i += 5) {   // 分批送，避免超過連線時間
+        const r = await apiSend<{ reopened: number; failed: { id: string; message: string }[] }>("POST", "/documents/batch-unmatch",
+          { ids: docs.slice(i, i + 5).map((d) => d.id) });
+        reopened += r.reopened; failed.push(...r.failed);
+      }
+      toast(`已送回待確認 ${reopened} 筆銀行交易${failed.length ? `；${failed.length} 張沒處理：${failed[0].message}` : ""}`,
+            failed.length ? "error" : undefined);
       onDone();
     } catch (e) { toast((e as Error).message || "失敗", "error"); } finally { setBusy(false); setSure(false); }
   }

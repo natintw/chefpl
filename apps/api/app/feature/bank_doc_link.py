@@ -21,10 +21,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.errors import ValidationFailed
+import logging
+
+from app.errors import AppError, ValidationFailed
 from app.feature.manual_match import UnmatchService
 from app.feature.models import Document, ReviewItem
 from app.seams.company import get_directory
+
+log = logging.getLogger("ledger.bank_doc_link")
 
 FAMILY = {"receivable": ("receivable", "advance_receipt"), "advance_receipt": ("receivable", "advance_receipt"),
           "payable": ("payable",)}
@@ -227,7 +231,12 @@ class BankDocLinkService:
                 r = self.um.relink(bank_id, payload, actor)
                 sp.commit()
                 done.append({"bank_document_id": str(bank_id), "difference": r.get("difference", 0)})
-            except ValidationFailed as e:
+            except AppError as e:
                 sp.rollback()
                 failed.append({"bank_document_id": str(bank_id), "message": e.message})
+            except Exception as e:  # noqa: BLE001 — 一組出錯不影響其他組；寫 log 方便查
+                sp.rollback()
+                log.exception("link-apply 失敗：bank_document=%s", bank_id)
+                failed.append({"bank_document_id": str(bank_id),
+                               "message": f"系統錯誤（{type(e).__name__}）：{str(e).splitlines()[0][:160]}"})
         return {"linked": len(done), "results": done, "failed": failed}
