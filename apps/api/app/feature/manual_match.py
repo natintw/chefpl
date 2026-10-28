@@ -29,7 +29,7 @@ from app.seams.company import get_directory
 
 DEFAULT_EXTRA = {"out": "E12", "in": "N03"}       # 多付／多收
 DEFAULT_SHORT = {"out": "N03", "in": "E11"}       # 少付（折讓）／少收（手續費被先扣）
-DOC_TYPES = {"out": ("payable",), "in": ("receivable", "advance_receipt")}
+DOC_TYPES = {"out": ("payable", "prepayment"), "in": ("receivable", "advance_receipt", "allowance")}
 
 
 def adj_ref(txn: str) -> str:

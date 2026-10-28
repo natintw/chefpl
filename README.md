@@ -2,7 +2,7 @@
 
 博竑・鄧師傅集團的權責基礎帳務系統：記錄應付、應收、預估入帳、預收款與 B 類（不入損益）項目，產出集團／公司／門市月損益表，並把未結清項目交給現金流系統（ChefCashFlow）核對銀行簿子。
 
-- 開發文件：`docs/帳務損益系統_開發文件.md`（架構、資料模型、規則；本 repo 依 v0.3 實作）
+- 開發文件：`docs/帳務損益系統_開發文件.md`（架構、資料模型、規則；本 repo 依 v0.6 實作，差異見文件附錄 C）
 - 對接合約：`contracts/integration-cashflow.yaml`、`contracts/integration-invoice.yaml`
 - 對接與部署說明：`docs/系統對接說明_Railway.md`
 
@@ -23,11 +23,11 @@ ledger-desk/
 │  │  ├─ seams/              # 交接縫：發票系統、現金流主檔、AI、檔案（介面＋Mock＋真實實作）
 │  │  ├─ main.py             # API 進入點
 │  │  └─ worker.py           # 排程進入點（Railway Cron）
-│  ├─ migrations/            # 0001 結構、0002 類別與關鍵字種子
+│  ├─ migrations/            # 0001 結構、0002 類別與關鍵字種子 … 0013 預付／折讓／代付／沖抵
 │  ├─ fixtures/              # Mock 用的公司、門市、銀行帳戶、發票事件
 │  ├─ scripts/neon_roles.sql # Neon 帳號權限
 │  ├─ scripts/seed_demo.py   # 示範資料（只在本機／staging 用）
-│  ├─ tests/                 # pytest（27 個案例）
+│  ├─ tests/                 # pytest（94 個案例）
 │  ├─ Dockerfile
 │  └─ .env.example
 ├─ apps/web/                 # Next.js 15 帳務台（8 個頁面＋單據抽屜，對應 Design 畫布 S1–S9）
@@ -174,6 +174,26 @@ FILE_STORE_MODE=s3 與 BUCKET 等五個變數（${{ledger-files.*}}）
 
 ---
 
+## 預付款、折讓、代付與廠商主檔（v0.6）
+
+會計反映「新增支出」沒辦法處理先付訂金、折讓、別家公司代付三種情況；規則見開發文件 3.8、5.13–5.17。
+
+- **廠商主檔**（左側選單「廠商主檔」）：名稱＋統編。新增廠商一定要有統編（會檢查統編檢查碼），個人或小販勾「沒有統編」，
+  身分證只存遮蔽號碼。Excel 批次匯入先「預覽」再「確認匯入」；名稱不同的列可選保留或改名；只新增或補資料，不刪除。
+  初始名單：`claude/fixtures/vendors_seed_2026-10-28.csv`（ERP 8 家公司廠商資料整理成 568 家；原始 Excel 可直接上傳「匯入名單」工作表）。
+- **預付款**：新增支出 → 預付・先付部分。記 B07 預付款（不進損益），廠商一定要有統編。同一法人、同一統編的發票進來時
+  （發票系統、應付表、人工），待確認出現「待沖抵預付」，按「沖抵」就把訂金扣掉；人工登打發票時表單上也能直接勾選沖抵。
+- **折讓**：新增支出 → 折讓・退貨。用原發票號碼（或廠商統編、名稱）找原單；明細與稅額記負數，預設記回原發票月份
+  （已關帳就記折讓當月）。錢怎麼回來：尾款少付（沖到原單）、廠商退錢（等銀行入帳）、下次進貨抵（之後沖到別張應付）。
+- **集團內代付**：新增支出 → 代墊・代付。費用記在受益公司的門市；受益公司另記 B05「欠付款公司」，付款公司記一張
+  代付單（B05「對方欠我們」），由付款公司的銀行交易核對。發票抬頭是付款公司時，代付單多兩行科目「代付（進項）」
+  「代支出（銷項）」（暫用代號 `OB-IN`、`OB-OUT`，一進一出，不影響損益與 B05）。三張單據一起作廢（`POST /on-behalf/{id}/void`）。
+- **尚欠＝結清金額 − 銀行／零用金已付 − 沖抵**。本系統內的銀行核對（webhook、手動核對）已改用尚欠；
+  給現金流系統的 `open-items` 輸出格式**暫不變更**（Bill 2026-10-27：等規則確認再改）。
+- 有沖抵紀錄的單據不能直接作廢，要先在單據側欄「沖抵紀錄」取消沖抵。
+
+---
+
 ## 發票彙總表與廠商類別
 
 發票系統匯出的「廠商應付彙總表」直接在「匯入中心 → 發票彙總表」上傳（選成「應付帳款表」也會自動辨識）。
@@ -232,6 +252,9 @@ ChefCashFlow 匯入銀行簿子後，把銀行交易送到 `POST /integration/v1
 | 匯入 | `POST /api/v1/imports` → `GET /imports/{id}` → `POST /imports/{id}/commit` |
 | 待確認、月結 | `GET /api/v1/review-items`、`POST /review-items/{id}/resolve`、`/periods/{company}/{period}`、`/close`、`/reopen` |
 | 設定 | `/api/v1/settings/categories`、`counterparties`、`rules`、`recurring`、`accrual-templates` |
+| 廠商主檔（v0.6） | `GET /api/v1/vendors/search?q=`（統編或名稱）、`GET/POST /vendors`、`PATCH /vendors/{id}`、`POST /vendors/import`（`commit=false` 預覽）、`GET /vendors/import-template` |
+| 預付、折讓、代付（v0.6） | `POST /api/v1/prepayments`、`GET /prepayments`、`GET /vendors/{id}/open-prepayments`、`GET /documents/lookup?invoice_no=`、`GET /documents/original-candidates`、`POST /allowances`、`POST /on-behalf`、`POST /on-behalf/{id}/void` |
+| 沖抵（v0.6） | `POST /api/v1/offsets`、`POST /offsets/{id}/reverse`、`GET /documents/{id}/offsets`、`GET /documents/{id}/chain`（單據關聯） |
 | 現金流系統 | `GET /integration/v1/open-items`、`POST /settlements`、`POST /bank-only-items`、`GET /balances` |
 
 ---

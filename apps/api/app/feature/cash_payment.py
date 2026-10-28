@@ -21,7 +21,7 @@ from app.feature.posting import PostingService
 from app.seams.company import get_directory
 
 SOURCES = {"petty_cash": "零用金", "store_cash": "門市收銀", "advance": "老闆／員工代墊"}
-SETTLEABLE = {"payable", "receivable"}
+SETTLEABLE = {"payable", "receivable", "prepayment", "allowance"}
 
 
 class CashPaymentService:
@@ -99,4 +99,5 @@ class CashPaymentService:
 
     @staticmethod
     def _outstanding(doc: Document) -> int:
-        return (doc.settle_amount or 0) - sum(st.amount for st in doc.settlements if st.reversed_at is None)
+        return ((doc.settle_amount or 0) - sum(st.amount for st in doc.settlements if st.reversed_at is None)
+                - (doc.offset_amount or 0))

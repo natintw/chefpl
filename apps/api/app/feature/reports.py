@@ -224,7 +224,7 @@ class ReportService:
         from sqlalchemy import func, select
 
         from app.feature.models import Document, DocumentLine
-        stmt = (select(DocumentLine.company_id, func.sum(DocumentLine.amount)).join(Document)
+        stmt = (select(DocumentLine.company_id, func.sum(DocumentLine.amount)).join(Document, Document.id == DocumentLine.document_id)
                 .where(Document.doc_type == "accrual", Document.status == "posted", DocumentLine.period_key == period)
                 .group_by(DocumentLine.company_id))
         if cids is not None:
@@ -278,7 +278,7 @@ class ReportService:
                 "category_code": r["category_code"], "category_name": names[r["category_code"]],
                 "amount": 0, "by_counterparty": []})
             slot["amount"] += int(r["amount"])
-            if r["category_code"] in ("B02", "B05"):
+            if r["category_code"] in ("B02", "B05", "B07", "B08"):
                 slot["by_counterparty"].append({
                     "counterparty_id": str(r["counterparty_id"]) if r["counterparty_id"] else None,
                     "counterparty_company_id": r["intercompany_company_id"],

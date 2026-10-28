@@ -78,8 +78,14 @@ def split_evenly(amount: int, parts: int) -> list[int]:
     return [base + (1 if i < rem else 0) for i in range(parts)]
 
 
+def outstanding(doc) -> int:
+    """尚欠＝結清金額 − 銀行／零用金已付 − 沖抵（預付、折讓、他公司代付）。開發文件 3.8。"""
+    return (doc.settle_amount or 0) - (doc.settled_amount or 0) - (getattr(doc, "offset_amount", 0) or 0)
+
+
 # 單據方向：cash_out（我們付錢）、cash_in（我們收錢）
-CASH_OUT_TYPES = {"payable"}
+# prepayment：付訂金（錢流出，B07）；allowance 以「廠商要退錢」時才有結清金額（錢流入）
+CASH_OUT_TYPES = {"payable", "prepayment"}
 CASH_IN_TYPES = {"receivable", "advance_receipt"}
 SETTLEABLE_TYPES = CASH_OUT_TYPES | CASH_IN_TYPES
 
@@ -101,6 +107,9 @@ class LineInput:
     amount: int
     store_id: str | None = None
     description: str | None = None
+    counterparty_id: uuid.UUID | None = None       # B 類往來對象（代付的另一家公司、預付的廠商）
+    original_document_id: uuid.UUID | None = None  # 折讓：這一行沖減的原單
+    account_override_id: uuid.UUID | None = None   # 指定會計科目（代付抬頭為付款公司）
 
 
 @dataclass
@@ -129,3 +138,17 @@ class DocumentInput:
     import_batch_id: uuid.UUID | None = None
     status: str = "posted"
     allow_closed_period: bool = False  # 系統產生的開帳單據使用
+    # 預付款
+    expected_invoice_period: str | None = None
+    planned_category_code: str | None = None
+    order_total: int | None = None
+    # 折讓
+    original_invoice_no: str | None = None
+    allowance_no: str | None = None
+    allowance_reason: str | None = None
+    refund_method: str | None = None
+    # 代付
+    on_behalf_of_company_id: str | None = None
+    paid_by_company_id: str | None = None
+    invoice_buyer_tax_id: str | None = None
+    check_prepayments: bool = True   # 應付入帳時依賣方統編找未沖抵預付

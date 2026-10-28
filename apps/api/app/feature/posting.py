@@ -12,12 +12,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.errors import (AmountMismatch, AssetLifeRequired, DuplicateInvoice, DuplicateSource, HasSettlements,
-                        NotFound, PeriodClosed, ValidationFailed, VersionConflict)
+from sqlalchemy import func, select
+
+from app.errors import (AmountMismatch, AssetLifeRequired, DuplicateAllowance, DuplicateInvoice, DuplicateSource,
+                        HasOffsets, HasSettlements, NotFound, PeriodClosed, TaxIdRequired, ValidationFailed,
+                        VersionConflict)
 from app.feature.classification import classify
 from app.feature.common import (CASH_IN_TYPES, PERIOD_RE, SETTLEABLE_TYPES, DocumentInput, LineInput, add_months,
                                 cash_effect, due_date_for, months_in_memo, period_of)
-from app.feature.models import Counterparty, Document, DocumentLine, RecurringTemplate
+from app.feature.models import Counterparty, Document, DocumentLine, DocumentOffset, RecurringTemplate
 from app.feature.repositories import CatalogRepository, DocumentRepository, OpsRepository
 from app.seams.company import get_directory
 
@@ -58,7 +61,12 @@ class PostingService:
             due_date=inp.due_date, memo=inp.memo, accrual_mode=inp.accrual_mode,
             accrual_template_id=inp.accrual_template_id, expected_delivery_date=inp.expected_delivery_date,
             related_document_id=inp.related_document_id, relation=inp.relation, created_by=actor,
-            status=inp.status, settled_amount=0,
+            status=inp.status, settled_amount=0, offset_amount=0,
+            expected_invoice_period=inp.expected_invoice_period, planned_category_code=inp.planned_category_code,
+            order_total=inp.order_total, original_invoice_no=inp.original_invoice_no,
+            allowance_no=inp.allowance_no, allowance_reason=inp.allowance_reason, refund_method=inp.refund_method,
+            on_behalf_of_company_id=inp.on_behalf_of_company_id, paid_by_company_id=inp.paid_by_company_id,
+            invoice_buyer_tax_id=inp.invoice_buyer_tax_id,
         )
         if bulk:
             doc.id = uuid.uuid4()  # 先給 ID，flush 前就能被待確認等引用
@@ -69,6 +77,9 @@ class PostingService:
                 doc.settle_status, doc.settled_by, doc.settled_amount = "settled", "petty_cash", inp.settle_amount or 0
             else:
                 doc.settle_status = "open"
+        elif inp.doc_type == "allowance":
+            # 尾款少付：由 OffsetService 沖到原單後才算結清；廠商退錢／留著下次抵：等退款或沖抵
+            doc.settle_status = "open"
         else:
             doc.settle_status = "not_applicable"
         if doc.status == "posted":
@@ -80,6 +91,9 @@ class PostingService:
                                           store_id=ln.store_id,
                                           period_key=ln.period_key, category_code=ln.category_code,
                                           amount=ln.amount, description=ln.description,
+                                          counterparty_id=ln.counterparty_id,
+                                          original_document_id=ln.original_document_id,
+                                          account_override_id=ln.account_override_id,
                                           is_intercompany=intercompany and ln.category_code in ("C99", "R06")))
         if bulk:
             self.s.add(doc)
@@ -135,6 +149,22 @@ class PostingService:
             errs.append({"field": "settle_amount", "message": "應付／應收金額必填"})
         if inp.doc_type == "accrual" and inp.accrual_mode not in ("estimate_reverse", "provision"):
             errs.append({"field": "accrual_mode", "message": "預估入帳要選模式"})
+        if inp.doc_type == "prepayment":
+            if cp is None:
+                errs.append({"field": "counterparty_id", "message": "預付款要選廠商"})
+            elif not cp.tax_id and not cp.no_tax_id and not cp.id_masked:
+                raise TaxIdRequired("預付款要有廠商統編，發票來時才能比對沖抵；沒有統編請先在廠商主檔勾選「沒有統編」",
+                                    [{"field": "counterparty_tax_id", "message": "必填"}])
+            if any(ln.category_code != "B07" for ln in inp.lines):
+                errs.append({"field": "lines", "message": "預付款只記 B07 預付款，付款時不進損益"})
+        if inp.doc_type == "allowance":
+            if cp is None:
+                errs.append({"field": "counterparty_id", "message": "折讓要選廠商"})
+            if not inp.refund_method:
+                errs.append({"field": "refund_method", "message": "請選錢怎麼回來"})
+            for i, ln in enumerate(inp.lines):
+                if ln.amount >= 0:
+                    errs.append({"field": f"lines[{i}].amount", "message": "折讓明細為負數"})
         if inp.doc_type == "advance_receipt":
             if inp.expected_delivery_date is None:
                 errs.append({"field": "expected_delivery_date", "message": "預收款要填預計交貨或兌換日"})
@@ -158,6 +188,16 @@ class PostingService:
         if errs:
             raise ValidationFailed("單據內容不完整", errs)
 
+        if inp.doc_type == "allowance" and inp.lines:
+            # 折讓：明細與稅額都是負數，加總＝−折讓含稅金額（開發文件 7）
+            total = sum(cash_effect(self.catalog.category(ln.category_code).nature, ln.amount, "payable")
+                        for ln in inp.lines) + inp.tax_amount
+            if inp.settle_amount is None or inp.settle_amount <= 0:
+                raise ValidationFailed("折讓金額（含稅）要大於 0", [{"field": "settle_amount", "message": "必填"}])
+            diff = -inp.settle_amount - total
+            if abs(diff) > self.cfg.amount_tolerance:
+                raise AmountMismatch(f"折讓明細合計＋稅額 = {total:,}，與折讓金額 −{inp.settle_amount:,} 差 {diff:,}",
+                                     [{"field": "settle_amount", "message": f"差額 {diff}"}])
         if inp.doc_type in SETTLEABLE_TYPES and inp.lines:
             total = sum(cash_effect(self.catalog.category(ln.category_code).nature, ln.amount, inp.doc_type)
                         for ln in inp.lines) + inp.tax_amount
@@ -175,7 +215,14 @@ class PostingService:
                                        f"或請管理者重開 {ln.period_key}？", [{"field": "period_key",
                                                                               "message": ln.period_key}])
 
-        if inp.source_kind == "manual" and cp is not None:
+        if inp.doc_type == "allowance" and inp.allowance_no and cp is not None:
+            from app.feature.models import Document as _D
+            dup = self.s.scalar(select(_D).where(_D.doc_type == "allowance", _D.counterparty_id == cp.id,
+                                                 _D.allowance_no == inp.allowance_no, _D.status != "void"))
+            if dup:
+                raise DuplicateAllowance(f"{cp.name} 的折讓單 {inp.allowance_no} 已經建立過",
+                                         [{"field": "allowance_no", "message": str(dup.id)}])
+        if inp.source_kind == "manual" and cp is not None and inp.doc_type != "allowance":
             for no in inp.invoice_nos:
                 dup = self.docs.find_by_invoice(no, counterparty_id=cp.id)
                 if dup:
@@ -203,6 +250,27 @@ class PostingService:
         if doc.status == "posted" and any(ln.category_code == "B99" for ln in doc.lines):
             self.ops.open_review("b99_open", doc.company_id, f"document:{doc.id}", {"document_id": str(doc.id)},
                                  period_key=doc.lines[0].period_key)
+        # 應付入帳：同一法人、同賣方統編有未沖抵的預付 → 待確認「待沖抵預付」（5.13；第一階段一律人工確認）
+        if (doc.doc_type == "payable" and inp.check_prepayments and doc.counterparty_id is not None
+                and doc.counterparty_id in self._prepay_vendors()):
+            from app.feature.offsets import OffsetService
+            cands = OffsetService(self.s).open_prepayments(doc.company_id, doc.counterparty_id, before=doc.doc_date)
+            if cands:
+                cp = self.catalog.counterparty(doc.counterparty_id)
+                self.ops.open_review(
+                    "prepayment_match", doc.company_id, f"document:{doc.id}",
+                    {"document_id": str(doc.id), "counterparty_name": cp.name if cp else None,
+                     "tax_id": cp.tax_id if cp else None, "invoice_nos": list(doc.invoice_nos),
+                     "settle_amount": doc.settle_amount, "doc_date": doc.doc_date.isoformat(),
+                     "candidates": cands},
+                    period_key=doc.lines[0].period_key if doc.lines else None)
+
+    def _prepay_vendors(self) -> set:
+        """有未沖抵預付的廠商（快取：批次匯入幾百列時只查一次）。"""
+        if not hasattr(self, "_pv"):
+            from app.feature.offsets import OffsetService
+            self._pv = OffsetService(self.s).vendors_with_open_prepayments()
+        return self._pv
 
     # ------------------------------------------------------------------ 檢查（登打中）
     def check(self, inp: DocumentInput) -> list[Finding]:
@@ -299,6 +367,10 @@ class PostingService:
             raise ValidationFailed("作廢需填原因")
         if any(st.reversed_at is None for st in doc.settlements) and not force:
             raise HasSettlements("這筆已核對到銀行付款，請先在現金流系統取消配對")
+        if not force and self.s.scalar(select(func.count()).select_from(DocumentOffset).where(
+                DocumentOffset.reversed_at.is_(None),
+                (DocumentOffset.from_document_id == doc.id) | (DocumentOffset.to_document_id == doc.id))):
+            raise HasOffsets("這筆已沖抵了預付、折讓或代付，請先取消沖抵")
         for p in {l.period_key for l in doc.lines}:
             if self.ops.is_closed(doc.company_id, p) and not force:
                 raise PeriodClosed(f"{p} 已關帳，不能作廢")
@@ -321,12 +393,19 @@ class PostingService:
         return doc_company
 
     def recompute_settlement(self, doc: Document) -> None:
-        if doc.doc_type not in SETTLEABLE_TYPES or doc.settled_by == "petty_cash":
+        """結清狀態＝銀行／零用金已付（settlements）＋沖抵（document_offsets，見 3.8）對上結清金額。"""
+        if doc.doc_type not in SETTLEABLE_TYPES | {"allowance"} or doc.settled_by == "petty_cash":
             return
         paid = sum(st.amount for st in doc.settlements if st.reversed_at is None)
+        offset = doc.offset_amount or 0
+        if doc.doc_type == "allowance":  # 折讓是「沖人的一方」：用掉的部分＝沖到其他單據的金額
+            offset = self.s.scalar(select(func.coalesce(func.sum(DocumentOffset.amount), 0)).where(
+                DocumentOffset.from_document_id == doc.id, DocumentOffset.reversed_at.is_(None))) or 0
         target = doc.settle_amount or 0
         doc.settled_amount = paid
-        doc.settled_by = "bank" if paid else None
+        doc.settled_by = ("bank" if paid else
+                          "paid_by_other" if offset and doc.paid_by_company_id else "offset" if offset else None)
+        paid += offset
         if paid == 0:
             doc.settle_status = "open"
         elif paid < target:

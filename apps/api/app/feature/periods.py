@@ -71,20 +71,20 @@ class PeriodService:
         return items
 
     def _has_revenue(self, company_id: str, period: str, store_id: str) -> bool:
-        stmt = (select(func.count()).select_from(DocumentLine).join(Document)
+        stmt = (select(func.count()).select_from(DocumentLine).join(Document, Document.id == DocumentLine.document_id)
                 .where(Document.status == "posted", DocumentLine.company_id == company_id,
                        DocumentLine.period_key == period, DocumentLine.store_id == store_id,
                        DocumentLine.category_code.like("R%")))
         return (self.s.scalar(stmt) or 0) > 0
 
     def _sum(self, company_id: str, period: str, category: str) -> int:
-        stmt = (select(func.coalesce(func.sum(DocumentLine.amount), 0)).join(Document)
+        stmt = (select(func.coalesce(func.sum(DocumentLine.amount), 0)).join(Document, Document.id == DocumentLine.document_id)
                 .where(Document.status == "posted", DocumentLine.company_id == company_id,
                        DocumentLine.period_key == period, DocumentLine.category_code == category))
         return int(self.s.scalar(stmt) or 0)
 
     def _unallocated(self, company_id: str, period: str) -> int:
-        stmt = (select(func.coalesce(func.sum(DocumentLine.amount), 0)).join(Document)
+        stmt = (select(func.coalesce(func.sum(DocumentLine.amount), 0)).join(Document, Document.id == DocumentLine.document_id)
                 .where(Document.status == "posted", DocumentLine.company_id == company_id,
                        DocumentLine.period_key == period, DocumentLine.store_id.is_(None),
                        ~DocumentLine.category_code.like("B%"), ~DocumentLine.category_code.like("R%"),

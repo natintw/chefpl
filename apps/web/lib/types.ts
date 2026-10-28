@@ -36,7 +36,8 @@ export type Statement = {
 };
 
 export type DocLine = { line_no: number; period_key: string; store_id: string | null; category_code: string; amount: number;
-  description: string | null; is_intercompany: boolean };
+  description: string | null; is_intercompany: boolean; counterparty_id?: string | null;
+  original_document_id?: string | null; account_override_id?: string | null };
 export type Doc = {
   id: string; doc_type: string; source_kind: string; company_id: string;
   counterparty: { id: string; name: string; is_intercompany: boolean } | null;
@@ -44,6 +45,10 @@ export type Doc = {
   tax_amount: number; outstanding: number | null; settle_status: string; settled_by: string | null; due_date: string | null;
   status: string; memo: string | null; store_ids: string[]; period_keys: string[]; version: number;
   settled_dates?: string[]; bank_txn_ids?: string[];
+  offset_amount?: number; related_document_id?: string | null; relation?: string | null;
+  refund_method?: string | null; allowance_no?: string | null; allowance_reason?: string | null;
+  expected_invoice_period?: string | null; order_total?: number | null; on_behalf_of_company_id?: string | null;
+  paid_by_company_id?: string | null; invoice_buyer_tax_id?: string | null;
   lines?: DocLine[]; settlements?: { cash_txn_id: string; cash_account_id: string; txn_date: string; amount: number; bank_amount?: number | null;
     match_level: string; reversed: boolean ; kind?: "cash" | "bank"; note?: string | null; created_by?: string | null }[];
 };
@@ -56,3 +61,14 @@ export type ReviewItem = { id: string; kind: string; company_id: string; period:
   suggested_category_code?: string | null; suggested_period_mode?: "same" | "prev" | null; suggestion_source?: string | null };
 export type ChecklistItem = { code: string; label: string; status: "passed" | "failed" | "na"; note: string };
 export type Finding = { code: string; level: "ok" | "warn" | "info" | "error"; message: string; data: Record<string, any> };
+
+/** 廠商搜尋結果（GET /vendors/search） */
+export type VendorHit = { id: string; name: string; tax_id: string | null; id_masked: string | null; no_tax_id: boolean;
+  aliases: string[]; is_intercompany: boolean; intercompany_company_id: string | null;
+  default_category_code: string | null; match: "tax_id" | "name" | "keyword"; open_prepayment_amount: number;
+  similar_names: boolean };
+export type OpenPrepayment = { document_id: string; doc_date: string; remaining: number; amount: number; memo: string | null;
+  company_id: string; expected_invoice_period: string | null; planned_category_code: string | null; paid: boolean };
+export type Offset = { id: string; kind: "prepayment" | "allowance" | "vendor_credit" | "paid_by_other";
+  from_document_id: string; to_document_id: string; amount: number; auto_applied: boolean;
+  journal_document_id: string | null; created_at: string | null; created_by: string; reversed_at: string | null };
