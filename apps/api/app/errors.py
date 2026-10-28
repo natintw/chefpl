@@ -85,3 +85,35 @@ class HasErrors(AppError):
 
 class UpstreamUnavailable(AppError):
     status, code = 503, "UPSTREAM_UNAVAILABLE"
+
+
+class TaxIdRequired(AppError):
+    status, code = 422, "TAX_ID_REQUIRED"
+
+
+class TaxIdExists(AppError):
+    status, code = 409, "TAX_ID_EXISTS"
+
+
+class HasOffsets(AppError):
+    status, code = 409, "HAS_OFFSETS"
+
+
+class DuplicateAllowance(AppError):
+    status, code = 409, "DUPLICATE_ALLOWANCE"
+
+
+class ExceedsPrepayment(AppError):
+    status, code = 422, "EXCEEDS_PREPAYMENT"
+
+
+class ExceedsOutstanding(AppError):
+    status, code = 422, "EXCEEDS_OUTSTANDING"
+
+
+class ExceedsOriginal(AppError):
+    status, code = 422, "EXCEEDS_ORIGINAL"
+
+
+class SameCompany(AppError):
+    status, code = 422, "SAME_COMPANY"

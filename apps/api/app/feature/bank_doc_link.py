@@ -31,7 +31,8 @@ from app.seams.company import get_directory
 log = logging.getLogger("ledger.bank_doc_link")
 
 FAMILY = {"receivable": ("receivable", "advance_receipt"), "advance_receipt": ("receivable", "advance_receipt"),
-          "payable": ("payable",)}
+          "payable": ("payable", "prepayment"), "prepayment": ("payable", "prepayment"),
+          "allowance": ("receivable", "advance_receipt", "allowance")}
 DATE_HINT = re.compile(r"(?<!\d)(1[0-2]|0?[1-9])\s*[/／.月]\s*(3[01]|[12]\d|0?[1-9])(?!\d)")
 NEAR_DAYS = 7      # 沒寫日期時，往前找幾天
 HINT_SPAN = 45     # 備註日期最多比銀行日早幾天

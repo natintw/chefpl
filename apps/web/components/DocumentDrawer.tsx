@@ -2,8 +2,8 @@
 /** 單據側欄：明細、結清紀錄、來源。損益表下鑽、應付帳款、待確認共用。 */
 import { useState } from "react";
 import { apiSend, useApi } from "@/lib/api";
-import { money, settleLabel, SOURCE_LABEL } from "@/lib/format";
-import type { Doc } from "@/lib/types";
+import { DOC_TYPE_LABEL, money, settleLabel, SOURCE_LABEL } from "@/lib/format";
+import type { Doc, Offset } from "@/lib/types";
 import { useDirectory } from "./directory";
 import { ErrorBox, Skeleton, Tag, useToast } from "./ui";
 
@@ -17,6 +17,17 @@ export function DocumentDrawer({ id, onClose, onChanged, onRelink }: {
   onRelink?: (t: RelinkTarget) => void;
 }) {
   const { data: d, error, loading, reload } = useApi<Doc>(`/documents/${id}`);
+  const chain = useApi<{ documents: Doc[]; offsets: Offset[] }>(`/documents/${id}/chain`);
+  const [undoing, setUndoing] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
+  async function reverseOffset(offId: string) {
+    setBusy(true);
+    try {
+      await apiSend("POST", `/offsets/${offId}/reverse`, { reason: reason || "會計取消" });
+      toast("已取消沖抵"); setUndoing(null); setReason("");
+      reload(); chain.reload(); onChanged?.();
+    } catch (e) { toast((e as Error).message || "取消失敗", "error"); } finally { setBusy(false); }
+  }
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   async function undoCash(paymentId: string) {
@@ -81,6 +92,7 @@ export function DocumentDrawer({ id, onClose, onChanged, onRelink }: {
           <div className="kv">
             {d.settle_amount !== null && <div><div className="k">應付／應收（含稅）</div><div className="num">{money(d.settle_amount, { zeroDash: false })}</div></div>}
             {d.settle_amount !== null && <div><div className="k">未結清</div><div className="num">{money(d.outstanding, { zeroDash: false })}</div></div>}
+            {!!d.offset_amount && <div><div className="k">已沖抵（訂金、折讓、代付）</div><div className="num">{money(-d.offset_amount, { zeroDash: false })}</div></div>}
             <div><div className="k">稅額</div><div className="num">{money(d.tax_amount, { zeroDash: false })}</div></div>
             <div><div className="k">到期日</div><div className="num">{d.due_date || "—"}</div></div>
             <div><div className="k">發票</div><div className="num">{d.invoice_nos.length ? d.invoice_nos.join("、") : d.has_invoice ? "有" : "無發票"}</div></div>
@@ -99,6 +111,43 @@ export function DocumentDrawer({ id, onClose, onChanged, onRelink }: {
               </tbody>
             </table>
           </div>
+          {chain.data && chain.data.documents.length > 1 && (
+            <div>
+              <div className="small" style={{ marginBottom: 4 }}>單據關聯（同一筆交易）</div>
+              <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 4 }}>
+                {chain.data.documents.map((c) => (
+                  <li key={c.id} className="small" style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "4px 6px",
+                       borderRadius: 6, background: c.id === d.id ? "var(--accent-soft)" : undefined }}>
+                    <span>{c.doc_date}・{c.relation === "offsets_prepayment" ? "預付沖抵" : c.relation === "paid_on_behalf" && c.doc_type === "journal" ? "代付往來" : DOC_TYPE_LABEL[c.doc_type] || c.doc_type}{c.on_behalf_of_company_id ? `（代付 ${companyName(c.on_behalf_of_company_id)}）` : ""}
+                      {c.company_id !== d.company_id ? `・${companyName(c.company_id)}` : ""}{c.invoice_nos.length ? `・${c.invoice_nos.join("、")}` : ""}</span>
+                    <span className="num">{money(c.doc_type === "allowance" ? -(c.settle_amount || 0) : c.settle_amount ?? (c.lines || []).reduce((a, l) => a + l.amount, 0), { zeroDash: false })}</span>
+                  </li>))}
+              </ol>
+            </div>
+          )}
+          {chain.data && chain.data.offsets.some((o) => !o.reversed_at && (o.to_document_id === d.id || o.from_document_id === d.id)) && (
+            <div>
+              <div className="small" style={{ marginBottom: 4 }}>沖抵紀錄</div>
+              {chain.data.offsets.filter((o) => !o.reversed_at && (o.to_document_id === d.id || o.from_document_id === d.id)).map((o) => (
+                <div key={o.id} className="small" style={{ display: "grid", gap: 4, padding: "4px 0" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                    <span>{({ prepayment: "預付沖抵", allowance: "折讓沖減", vendor_credit: "廠商欠款抵扣", paid_by_other: "他公司代付" })[o.kind]}
+                      {o.auto_applied ? "（自動）" : ""}・{o.created_at?.slice(0, 10)}</span>
+                    <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <span className="num">{money(o.amount)}</span>
+                      {o.kind !== "paid_by_other" && undoing !== o.id && <button className="btn sm" disabled={busy} onClick={() => setUndoing(o.id)}>取消</button>}
+                    </span>
+                  </div>
+                  {undoing === o.id && (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input aria-label="取消原因" placeholder="取消原因" value={reason} onChange={(e) => setReason(e.target.value)} />
+                      <button className="btn sm danger" disabled={busy || !reason} onClick={() => reverseOffset(o.id)}>確認取消</button>
+                      <button className="btn sm" onClick={() => setUndoing(null)}>不要</button>
+                    </div>
+                  )}
+                </div>))}
+            </div>
+          )}
           {!!d.settlements?.length && (
             <div>
               <div className="small" style={{ marginBottom: 4 }}>結清紀錄</div>

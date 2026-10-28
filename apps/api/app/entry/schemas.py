@@ -287,3 +287,87 @@ class LinkGroupIn(BaseModel):
 
 class LinkApplyIn(BaseModel):
     groups: list[LinkGroupIn] = Field(min_length=1, max_length=500)
+
+
+
+# ---------------------------------------------------------------- v0.6：廠商主檔、預付、折讓、代付、沖抵
+class VendorIn(BaseModel):
+    name: str = Field(min_length=1)
+    tax_id: str | None = None
+    no_tax_id: bool = False
+    id_masked: str | None = None
+    aliases: list[str] = []
+    keywords: list[str] = []
+    default_category_code: str | None = None
+    payment_rule: str = "next_month_30"
+    is_intercompany: bool = False
+    intercompany_company_id: str | None = None
+
+
+class VendorPatch(BaseModel):
+    name: str | None = None
+    tax_id: str | None = None
+    no_tax_id: bool | None = None
+    aliases: list[str] | None = None
+    keywords: list[str] | None = None
+    default_category_code: str | None = None
+    payment_rule: str | None = None
+    is_active: bool | None = None
+
+
+class PrepaymentIn(BaseModel):
+    company_id: str
+    store_id: str | None = None
+    counterparty_id: uuid.UUID
+    doc_date: date
+    amount: int = Field(gt=0)
+    settlement_method: Literal["pending", "bank_paid", "petty_cash"] = "bank_paid"
+    expected_invoice_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+    planned_category_code: str | None = None
+    order_total: int | None = None
+    memo: str | None = None
+    due_date: date | None = None
+
+
+class AllowanceIn(BaseModel):
+    original_document_id: uuid.UUID | None = None
+    company_id: str | None = None          # 沒有原單時必填
+    counterparty_id: uuid.UUID | None = None
+    category_code: str | None = None       # 沒有原單時必填；有原單時可覆寫
+    store_id: str | None = None
+    doc_date: date
+    reason: Literal["return", "quality", "shortage", "price"]
+    untaxed: int = Field(gt=0)
+    tax: int = Field(default=0, ge=0)
+    refund_method: Literal["reduce_outstanding", "vendor_refund", "credit_next"]
+    period: Literal["original", "current"] = "original"
+    allowance_no: str | None = None
+    memo: str | None = None
+
+
+class OnBehalfIn(BaseModel):
+    beneficiary_company_id: str
+    store_id: str | None = None
+    vendor_id: uuid.UUID
+    category_code: str
+    payer_company_id: str
+    doc_date: date
+    untaxed: int = Field(gt=0)
+    tax: int = Field(default=0, ge=0)
+    invoice_no: str | None = None
+    invoice_buyer_tax_id: str | None = Field(default=None, pattern=r"^\d{8}$")
+    has_invoice: bool = True
+    settlement_method: Literal["pending", "bank_paid", "petty_cash"] = "bank_paid"
+    paid_on: date | None = None
+    memo: str | None = None
+
+
+class OffsetIn(BaseModel):
+    kind: Literal["prepayment", "vendor_credit"]
+    from_document_id: uuid.UUID
+    to_document_id: uuid.UUID
+    amount: int = Field(gt=0)
+
+
+class ReasonIn(BaseModel):
+    reason: str = Field(min_length=1)

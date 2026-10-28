@@ -144,6 +144,19 @@ function Card({ it, onDone, embedded }: { it: ReviewItem; onDone: () => void; em
         <div className="ai"><div style={{ fontWeight: 600 }}>建議：{p.suggestion.category_code} {categoryName(p.suggestion.category_code)} <Tag kind="src">信心 {p.suggestion.confidence}</Tag></div>
           <div>{p.suggestion.reason}</div><div className="small">AI 建議，採用前不會入帳（{p.suggestion.model_version}）</div></div>
       )}
+      {it.kind === "prepayment_match" && (
+        <div className="stack" style={{ gap: 6 }}>
+          <div className="small">發票上的賣方統編 <span className="num">{p.tax_id || "—"}</span> 對到下列還沒沖抵的預付；按「沖抵」會依序沖到發票尚欠為止。</div>
+          <div className="tbl-wrap"><table>
+            <thead><tr><th>預付日</th><th>說明</th><th className="r">可沖抵</th></tr></thead>
+            <tbody>{(p.candidates || []).map((c: { document_id: string; doc_date: string; memo: string | null; remaining: number }) => (
+              <tr key={c.document_id}><td className="num">{c.doc_date}</td><td>{c.memo || "—"}</td><td className="num r">{money(c.remaining)}</td></tr>))}</tbody>
+          </table></div>
+        </div>
+      )}
+      {it.kind === "invoice_buyer_mismatch" && (
+        <div className="small">發票抬頭統編 <span className="num">{p.buyer_tax_id}</span> 既不是 {p.beneficiary}、也不是 {p.payer}。請確認發票是否開錯，或由會計師判斷進項怎麼處理。</div>
+      )}
       {it.kind === "duplicate_source" && (
         <div className="kv"><div><div className="k">發票</div><div className="num">{p.invoice?.invoice_no}</div></div>
           <div><div className="k">對象</div><div>{p.invoice?.seller_name}</div></div>
@@ -177,6 +190,7 @@ function Card({ it, onDone, embedded }: { it: ReviewItem; onDone: () => void; em
             <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} style={{ width: 18, minHeight: 18 }} /> 記住這家廠商的類別</label>
           <button className="btn pri" disabled={busy || !cat} onClick={() => resolve("set_category", { category_code: cat, remember_rule: remember }, "已入帳")}>確認類別並入帳</button>
         </>}
+        {it.kind === "prepayment_match" && <button className="btn pri" disabled={busy} onClick={() => resolve("apply_offset", {}, "已沖抵預付")}>沖抵</button>}
         {it.kind === "amount_only_match" && <button className="btn pri" disabled={busy} onClick={() => resolve("confirm_match", {}, "已標為結清")}>是這筆，標為已結清</button>}
         {it.kind === "duplicate_source" && <>
           <button className="btn pri" disabled={busy} onClick={() => resolve("link", {}, "已視為同一筆")}>視為同一筆</button>
@@ -187,7 +201,7 @@ function Card({ it, onDone, embedded }: { it: ReviewItem; onDone: () => void; em
           <button className="btn pri" disabled={busy || !cat} onClick={() => resolve("set_default_category", { category_code: cat }, "已設定預設類別")}>設為預設類別</button>
           <button className="btn" disabled={busy} onClick={() => resolve("acknowledge", {}, "已確認")}>只確認</button>
         </>}
-        {!["bank_only", "unclassified", "amount_only_match", "duplicate_source", "new_counterparty"].includes(it.kind) &&
+        {!["bank_only", "unclassified", "amount_only_match", "duplicate_source", "new_counterparty", "prepayment_match"].includes(it.kind) &&
           <button className="btn pri" disabled={busy} onClick={() => resolve("acknowledge", {}, "已確認")}>確認</button>}
         {it.kind === "bank_only" && bank?.company_id &&
           <button className="btn" disabled={busy} aria-expanded={manual} onClick={() => setManual(!manual)}>
@@ -213,6 +227,8 @@ function title(it: ReviewItem): string {
     case "duplicate_source": return "發票系統送來的發票，應付表裡已經有了";
     case "new_counterparty": return `新對象「${p.name}」${p.tax_id ? `（${p.tax_id}）` : ""}`;
     case "b99_open": return "有一筆歸在 B99 其他，月結前要改歸";
+    case "prepayment_match": return `${p.counterparty_name || "廠商"} ${(p.invoice_nos || []).join("、")} 發票 ${money(p.settle_amount)}，有預付款還沒沖抵`;
+    case "invoice_buyer_mismatch": return `代付發票抬頭不符：${p.beneficiary} 的費用`;
     case "recurring_ending": return `固定費用「${p.description}」將於 ${p.end_period} 結束`;
     default: return REVIEW_LABEL[it.kind] || it.kind;
   }

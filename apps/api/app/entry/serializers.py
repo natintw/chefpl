@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.feature.common import outstanding
 from app.feature.models import Document
 
 
@@ -18,8 +19,15 @@ def document(d: Document, detail: bool = True) -> dict[str, Any]:
                          "is_intercompany": d.counterparty.is_intercompany} if d.counterparty else None,
         "doc_date": d.doc_date.isoformat(), "invoice_nos": list(d.invoice_nos), "has_invoice": d.has_invoice,
         "settle_amount": d.settle_amount, "settled_amount": d.settled_amount, "tax_amount": d.tax_amount,
-        "outstanding": (d.settle_amount or 0) - d.settled_amount if d.settle_amount is not None else None,
+        "offset_amount": d.offset_amount or 0,
+        "outstanding": outstanding(d) if d.settle_amount is not None else None,
         "settle_status": d.settle_status, "settled_by": d.settled_by,
+        "related_document_id": str(d.related_document_id) if d.related_document_id else None,
+        "relation": d.relation, "refund_method": d.refund_method, "allowance_no": d.allowance_no,
+        "allowance_reason": d.allowance_reason, "original_invoice_no": d.original_invoice_no,
+        "expected_invoice_period": d.expected_invoice_period, "planned_category_code": d.planned_category_code,
+        "order_total": d.order_total, "on_behalf_of_company_id": d.on_behalf_of_company_id,
+        "paid_by_company_id": d.paid_by_company_id, "invoice_buyer_tax_id": d.invoice_buyer_tax_id,
         "due_date": d.due_date.isoformat() if d.due_date else None, "status": d.status, "memo": d.memo,
         "store_ids": sorted({l.store_id for l in d.lines if l.store_id}),
         "period_keys": sorted({l.period_key for l in d.lines}), "version": d.version,
@@ -34,7 +42,11 @@ def document(d: Document, detail: bool = True) -> dict[str, Any]:
         out.update({
             "lines": [{"line_no": l.line_no, "period_key": l.period_key, "store_id": l.store_id,
                        "category_code": l.category_code, "amount": l.amount, "description": l.description,
-                       "is_intercompany": l.is_intercompany} for l in d.lines],
+                       "is_intercompany": l.is_intercompany,
+                       "counterparty_id": str(l.counterparty_id) if l.counterparty_id else None,
+                       "original_document_id": str(l.original_document_id) if l.original_document_id else None,
+                       "account_override_id": str(l.account_override_id) if l.account_override_id else None}
+                      for l in d.lines],
             "settlements": [{"cash_txn_id": s.cash_txn_id, "cash_account_id": s.cash_account_id,
                              "txn_date": s.txn_date.isoformat(), "amount": s.amount, "bank_amount": s.bank_amount,
                              "match_level": s.match_level,

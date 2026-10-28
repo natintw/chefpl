@@ -82,6 +82,7 @@ class Counterparty(Base):
     bank_accounts: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     default_store_id: Mapped[str | None] = mapped_column(Text)  # 這個對象的單據預設門市（例：員工屬於哪家店）  # 對方帳號（遮蔽或末幾碼），比對付款用
     issues_invoice: Mapped[bool] = mapped_column(Boolean, default=True)
+    no_tax_id: Mapped[bool] = mapped_column(Boolean, default=False)  # 確認沒有統編（個人、小販）：預付不自動比對
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -113,7 +114,8 @@ class Document(Base):
     has_invoice: Mapped[bool] = mapped_column(Boolean, default=False)
     tax_amount: Mapped[int] = mapped_column(Integer, default=0)
     settle_amount: Mapped[int | None] = mapped_column(Integer)
-    settled_amount: Mapped[int] = mapped_column(Integer, default=0)
+    settled_amount: Mapped[int] = mapped_column(Integer, default=0)       # 只來自 settlements（銀行、零用金）
+    offset_amount: Mapped[int] = mapped_column(Integer, default=0)        # 只來自 document_offsets（不經過銀行）
     settle_status: Mapped[str] = mapped_column(Text, default="open")
     settled_by: Mapped[str | None] = mapped_column(Text)
     due_date: Mapped[date | None] = mapped_column(Date)
@@ -125,6 +127,19 @@ class Document(Base):
     related_document_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey(f"{SCHEMA}.documents.id"))
     relation: Mapped[str | None] = mapped_column(Text)
     late_for_period: Mapped[str | None] = mapped_column(String(7))
+    # 預付款
+    expected_invoice_period: Mapped[str | None] = mapped_column(String(7))
+    planned_category_code: Mapped[str | None] = mapped_column(ForeignKey(f"{SCHEMA}.mgmt_categories.code"))
+    order_total: Mapped[int | None] = mapped_column(Integer)
+    # 折讓
+    original_invoice_no: Mapped[str | None] = mapped_column(Text)
+    allowance_no: Mapped[str | None] = mapped_column(Text)
+    allowance_reason: Mapped[str | None] = mapped_column(Text)
+    refund_method: Mapped[str | None] = mapped_column(Text)
+    # 代付
+    on_behalf_of_company_id: Mapped[str | None] = mapped_column(Text)
+    paid_by_company_id: Mapped[str | None] = mapped_column(Text)
+    invoice_buyer_tax_id: Mapped[str | None] = mapped_column(String(8))
     memo: Mapped[str | None] = mapped_column(Text)
     attachment_url: Mapped[str | None] = mapped_column(Text)
     void_reason: Mapped[str | None] = mapped_column(Text)
@@ -137,9 +152,9 @@ class Document(Base):
 
     lines: Mapped[list[DocumentLine]] = relationship(
         back_populates="document", cascade="all, delete-orphan", order_by="DocumentLine.line_no",
-        lazy="selectin")
+        lazy="selectin", foreign_keys="DocumentLine.document_id")
     settlements: Mapped[list[Settlement]] = relationship(back_populates="document", lazy="selectin")
-    counterparty: Mapped[Counterparty | None] = relationship(lazy="joined")
+    counterparty: Mapped[Counterparty | None] = relationship(lazy="joined", foreign_keys=[counterparty_id])
 
 
 class DocumentLine(Base):
@@ -155,7 +170,28 @@ class DocumentLine(Base):
     amount: Mapped[int] = mapped_column(Integer)
     is_intercompany: Mapped[bool] = mapped_column(Boolean, default=False)
     description: Mapped[str | None] = mapped_column(Text)
-    document: Mapped[Document] = relationship(back_populates="lines")
+    counterparty_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey(f"{SCHEMA}.counterparties.id"))
+    original_document_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey(f"{SCHEMA}.documents.id"))
+    account_override_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey(f"{SCHEMA}.accounts.id"))
+    document: Mapped[Document] = relationship(back_populates="lines", foreign_keys=[document_id])
+
+
+class DocumentOffset(Base):
+    """不經過銀行的沖減：預付沖應付、折讓沖原單、他公司代付、廠商欠款抵下次（開發文件 3.8）。"""
+    __tablename__ = "document_offsets"
+    __table_args__ = {"schema": SCHEMA}
+    id: Mapped[uuid.UUID] = _uuid()
+    kind: Mapped[str] = mapped_column(Text)  # prepayment / allowance / paid_by_other / vendor_credit
+    from_document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey(f"{SCHEMA}.documents.id"))
+    to_document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey(f"{SCHEMA}.documents.id"))
+    amount: Mapped[int] = mapped_column(Integer)
+    journal_document_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey(f"{SCHEMA}.documents.id"))
+    auto_applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reversed_by: Mapped[str | None] = mapped_column(Text)
+    reverse_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class BankAccountRow(Base):

@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.feature.common import SETTLEABLE_TYPES
+from app.feature.common import SETTLEABLE_TYPES, outstanding
 from app.feature.models import Document, Settlement
 from app.feature.posting import PostingService
 from app.feature.bank_accounts import refresh_overlay
@@ -44,7 +44,8 @@ def serialize_open_item(d: Document) -> dict[str, Any]:
         "doc_date": d.doc_date.isoformat(), "period_keys": sorted({l.period_key for l in d.lines}),
         "due_date": d.due_date.isoformat() if d.due_date else None, "payment_window": window,
         "settle_amount": d.settle_amount or 0, "settled_amount": d.settled_amount,
-        "outstanding": (d.settle_amount or 0) - d.settled_amount, "invoice_nos": list(d.invoice_nos),
+        "offset_amount": d.offset_amount or 0,
+        "outstanding": outstanding(d), "invoice_nos": list(d.invoice_nos),
         "has_invoice": d.has_invoice,
         "has_balance_lines": any(l.category_code.startswith("B") for l in d.lines),
         "source_kind": d.source_kind,
@@ -149,7 +150,7 @@ class SettlementService:
         return {"applied": applied, "duplicates": duplicates, "queued_for_review": queued, "rejected": rejected,
                 "documents": [{"document_id": str(d.id), "settle_status": d.settle_status,
                                "settled_amount": d.settled_amount,
-                               "outstanding": (d.settle_amount or 0) - d.settled_amount} for d in touched.values()]}
+                               "outstanding": outstanding(d)} for d in touched.values()]}
 
     # ------------------------------------------------------------------ bank-only-items
     def bank_only(self, items: list[dict[str, Any]]) -> dict[str, Any]:

@@ -50,6 +50,32 @@ class ReviewService:
             if res["rejected"]:
                 raise ValidationFailed("；".join(r["message"] for r in res["rejected"]))
             result["settled_documents"] = [d["document_id"] for d in docs]
+        elif item.kind == "prepayment_match" and action == "apply_offset":
+            # 待沖抵預付（5.13）：payload.items=[{prepayment_id, amount}]；不給就依序沖到發票尚欠為止
+            from app.feature.common import outstanding
+            from app.feature.offsets import OffsetService
+            svc = OffsetService(self.s)
+            doc = self.docs.get(uuid.UUID(item.payload["document_id"]))
+            if doc is None or doc.status == "void":
+                raise NotFound("應付單據不存在或已作廢")
+            picks = payload.get("items")
+            if not picks:
+                left, picks = outstanding(doc), []
+                for c in svc.open_prepayments(doc.company_id, doc.counterparty_id, before=doc.doc_date):
+                    if left <= 0:
+                        break
+                    amt = min(left, c["remaining"])
+                    picks.append({"prepayment_id": c["document_id"], "amount": amt})
+                    left -= amt
+            offsets = []
+            for p in picks:
+                if int(p.get("amount") or 0) <= 0:
+                    continue
+                off = svc.apply("prepayment", uuid.UUID(str(p["prepayment_id"])), doc.id, int(p["amount"]), actor)
+                offsets.append(str(off.id))
+            if not offsets:
+                raise ValidationFailed("沒有要沖抵的金額")
+            result.update({"document_id": str(doc.id), "offset_ids": offsets})
         elif item.kind == "unclassified" and action in ("set_category", "accept_suggestion"):
             code = payload.get("category_code") if action == "set_category" else \
                 (item.payload.get("suggestion") or {}).get("category_code")

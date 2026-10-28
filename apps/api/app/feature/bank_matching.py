@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.feature.bank_accounts import upsert_from_items
+from app.feature.common import outstanding
 from app.feature.models import Counterparty, Document, ReviewItem, Settlement
 from app.feature.settlement import SettlementService
 from app.seams.company import get_directory
@@ -110,7 +111,7 @@ class BankMatchService:
         amount = int(it["amount"])
 
         if it["direction"] == "in":
-            docs = self._open_docs(company_ids, ("receivable", "advance_receipt"), None, txn_date)
+            docs = self._open_docs(company_ids, ("receivable", "advance_receipt", "allowance"), None, txn_date)
             hits = [d for d in docs if _outstanding(d) == amount]
             if len(hits) == 1:
                 return self._apply(it, acct.company_id, hits, None, "amount", actor)
@@ -120,7 +121,7 @@ class BankMatchService:
         vendors, how = self._identify_vendor(it)
         tried = []
         for cp in vendors:
-            combo = self._combo(self._open_docs(company_ids, "payable", cp.id, txn_date), amount)
+            combo = self._combo(self._open_docs(company_ids, ("payable", "prepayment"), cp.id, txn_date), amount)
             tried.append((cp, combo))
         exact = [(cp, c) for cp, c in tried if c and c != "ambiguous"]
         if len(exact) == 1:
@@ -355,7 +356,7 @@ class BankMatchService:
     def _guess_by_amount(self, company_ids: set[str], amount: int, txn_date: date):
         """認不出廠商時：哪一家廠商的未付合計剛好等於金額（只在唯一時給建議）。"""
         by_cp: dict[uuid.UUID, list[Document]] = {}
-        for d in self._open_docs(company_ids, "payable", None, txn_date):
+        for d in self._open_docs(company_ids, ("payable", "prepayment"), None, txn_date):
             if d.counterparty_id:
                 by_cp.setdefault(d.counterparty_id, []).append(d)
         hits = [(cid, ds) for cid, ds in by_cp.items() if sum(_outstanding(d) for d in ds) == amount]
@@ -399,7 +400,7 @@ class BankMatchService:
 
 
 def _outstanding(d: Document) -> int:
-    return (d.settle_amount or 0) - (d.settled_amount or 0)
+    return outstanding(d)
 
 
 def _period(d: Document) -> str:

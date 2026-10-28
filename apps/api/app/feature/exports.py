@@ -14,6 +14,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.feature.common import outstanding
 from app.feature.models import Document
 from app.feature.repositories import CatalogRepository
 from app.seams.company import get_directory
@@ -205,7 +206,7 @@ def documents_xlsx(docs: list[Document], *, doc_type: str | None, scope_label: s
         ws.append([doc.doc_date, "、".join(sorted({ln.period_key for ln in doc.lines})), c.name if c else doc.company_id, names,
                    doc.counterparty.name if doc.counterparty else "", (doc.counterparty.tax_id if doc.counterparty else None) or "",
                    " ".join(doc.invoice_nos or []), SOURCE.get(doc.source_kind, doc.source_kind), net, doc.tax_amount or 0,
-                   total, doc.settled_amount or 0, total - (doc.settled_amount or 0),
+                   total, (doc.settled_amount or 0) + (doc.offset_amount or 0), outstanding(doc),
                    doc.due_date, SETTLE.get(doc.settle_status, doc.settle_status).format(verb), doc.memo or ""])
         r = ws.max_row
         ws.cell(r, 1).number_format = "yyyy-mm-dd"

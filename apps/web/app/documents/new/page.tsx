@@ -1,17 +1,26 @@
 "use client";
-/** S4 新增支出／收入／預估／預收。資料：POST /documents/check（即時檢查）、POST /documents。 */
+/** S4 新增支出／收入／預估／預收。資料：POST /documents/check（即時檢查）、POST /documents。
+ *  支出先選情況（v0.6）：一般支出／預付・先付部分／折讓・退貨／代墊・代付（components/SpecialExpense.tsx）。 */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "@/components/Shell";
 import { useDirectory } from "@/components/directory";
 import { useQuery } from "@/components/filters";
 import { FieldErrors, Mark, Tag, useToast } from "@/components/ui";
+import { AllowanceForm, OnBehalfForm, PrepayForm } from "@/components/SpecialExpense";
 import { ApiError, apiGet, apiSend } from "@/lib/api";
 import { money } from "@/lib/format";
-import type { Counterparty, Doc, Finding } from "@/lib/types";
+import type { Counterparty, Doc, Finding, OpenPrepayment } from "@/lib/types";
 
 type Kind = "payable" | "receivable" | "accrual" | "advance_receipt";
 type Line = { period_key: string; store_id: string; category_code: string; amount: string };
 const KIND_LABEL: Record<Kind, string> = { payable: "支出", receivable: "收入", accrual: "預估入帳", advance_receipt: "預收款" };
+type Case = "general" | "prepay" | "allowance" | "on_behalf";
+const CASES: { k: Case; title: string; sub: string; eg: string }[] = [
+  { k: "general", title: "一般支出", sub: "收到發票或收據，照實記一筆應付", eg: "蔬果、清潔用品、水電、記帳費" },
+  { k: "prepay", title: "預付・先付部分", sub: "發票還沒來就先付訂金", eg: "年菜食材訂金、設備頭期款" },
+  { k: "allowance", title: "折讓・退貨", sub: "廠商開了折讓單，從原本那張應付扣掉", eg: "品質不符、數量短少、價格回饋" },
+  { k: "on_behalf", title: "代墊・代付", sub: "費用是 A 的，錢是 B 先付的", eg: "博竑帳戶付了中正店的修繕" },
+];
 
 const today = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
 /** 網址有指定月份（例如從月結或待辦點進來）就預設那個月的最後一天，否則用今天 */
@@ -27,6 +36,9 @@ export default function NewEntryPage() {
   const toast = useToast();
   const { dir, categories, categoryName } = useDirectory();
   const [kind, setKind] = useState<Kind>("payable");
+  const [kase, setKase] = useState<Case>((["prepay", "allowance", "on_behalf"].includes(q.get("case")) ? q.get("case") : "general") as Case);
+  const [prepays, setPrepays] = useState<OpenPrepayment[]>([]);
+  const [usePre, setUsePre] = useState<Record<string, string>>({});
   const [company, setCompany] = useState(q.company || "");
   const [cpName, setCpName] = useState("");
   const [cpMatch, setCpMatch] = useState<Counterparty | null>(null);
@@ -80,6 +92,15 @@ export default function NewEntryPage() {
     return () => clearTimeout(t);
   }, [cpName]);
 
+  // 一般支出：這家廠商有未沖抵的預付 → 顯示沖抵區塊（5.13）
+  useEffect(() => {
+    setPrepays([]); setUsePre({});
+    if (kind !== "payable" || !cpMatch || !company) return;
+    apiGet<{ items: OpenPrepayment[] }>(`/vendors/${cpMatch.id}/open-prepayments`, { company_id: company, before: docDate })
+      .then((r) => { setPrepays(r.items); }).catch(() => {});
+  }, [kind, cpMatch, company, docDate]);
+  const preTotal = Object.values(usePre).reduce((a, v) => a + toInt(v), 0);
+
   const body = useMemo(() => ({
     doc_type: kind, company_id: company, doc_date: docDate, counterparty_name: cpName.trim() || undefined,
     invoice_no: invoiceNo.trim() || undefined, has_invoice: hasInvoice, memo: memo || undefined,
@@ -126,9 +147,18 @@ export default function NewEntryPage() {
     setErr(null);
     try {
       const d = await apiSend<Doc>("POST", "/documents", body);
-      toast(`已入帳：${d.counterparty?.name || KIND_LABEL[kind]} ${money(d.settle_amount ?? body.lines.reduce((a, l) => a + l.amount, 0))}`);
+      let offNote = "";
+      for (const [pid, v] of Object.entries(usePre)) {
+        if (toInt(v) > 0) {
+          try {
+            await apiSend("POST", "/offsets", { kind: "prepayment", from_document_id: pid, to_document_id: d.id, amount: toInt(v) });
+            offNote = `，已沖抵預付 ${money(preTotal)}`;
+          } catch (e) { toast(`單據已入帳，但沖抵失敗：${(e as Error).message}（可到待確認處理）`, "error"); }
+        }
+      }
+      toast(`已入帳：${d.counterparty?.name || KIND_LABEL[kind]} ${money(d.settle_amount ?? body.lines.reduce((a, l) => a + l.amount, 0))}${offNote}`);
       if (next) {
-        setCpName(""); setInvoiceNo(""); setMemo(""); setTotal(""); setTax(null); setLifeMonths(""); setLinesTouched(false);
+        setCpName(""); setInvoiceNo(""); setMemo(""); setTotal(""); setTax(null); setLifeMonths(""); setLinesTouched(false); setUsePre({});
         setLines([{ period_key: docDate.slice(0, 7), store_id: lines[0].store_id, category_code: "", amount: "" }]);
       } else {
         window.location.href = q.keep("/payables");
@@ -142,20 +172,53 @@ export default function NewEntryPage() {
 
   const setLine = (i: number, patch: Partial<Line>) => { setLinesTouched(true); setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l))); };
 
+  const special = kind === "payable" && kase !== "general";
+  const useGeneral = (preset?: string) => {
+    setKase("general"); setLinesTouched(true);
+    if (preset) setLines((ls) => ls.map((l, i) => (i === 0 ? { ...l, category_code: preset } : l)));
+  };
   return (
     <>
-      <PageHeader crumb="帳務" title={`新增${KIND_LABEL[kind]}`}
-                  sub="沒有經過發票系統的帳：無發票進貨、零用金、固定支出、預估與預收。" />
-      <div className="row">
+      <PageHeader crumb="帳務" title={special ? `新增${CASES.find((c) => c.k === kase)!.title}` : `新增${KIND_LABEL[kind]}`}
+                  sub="沒有經過發票系統的帳：無發票進貨、零用金、固定支出、預估與預收；支出另有預付、折讓、代付。" />
+      <div className="card pad stack" style={{ marginBottom: 16, gap: 12 }}>
+        <div className="f"><span id="kind-l">類型</span>
+          <div className="seg" role="group" aria-labelledby="kind-l" style={{ flexWrap: "wrap" }}>
+            {(Object.keys(KIND_LABEL) as Kind[]).map((k) => (
+              <button type="button" key={k} aria-pressed={kind === k} onClick={() => { setKind(k); setLinesTouched(false); if (k !== "payable") setKase("general"); }}>{KIND_LABEL[k]}</button>
+            ))}
+          </div>
+        </div>
+        {kind === "payable" && (
+          <fieldset style={{ border: 0, margin: 0, padding: 0 }}>
+            <legend style={{ fontSize: 13, fontWeight: 500, color: "var(--text-2)", marginBottom: 6 }}>這筆支出是哪一種？</legend>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10 }}>
+              {CASES.map((c) => (
+                <button type="button" key={c.k} aria-pressed={kase === c.k} onClick={() => setKase(c.k)} className="card"
+                        style={{ textAlign: "left", padding: 12, cursor: "pointer", font: "inherit", color: "inherit",
+                                 border: kase === c.k ? "2px solid var(--accent)" : "1px solid var(--line)",
+                                 background: kase === c.k ? "var(--accent-soft)" : "var(--surface)" }}>
+                  <div style={{ fontWeight: 600 }}>{c.title}</div>
+                  <div className="small" style={{ color: "var(--text-2)" }}>{c.sub}</div>
+                  <div className="small">例：{c.eg}</div>
+                </button>
+              ))}
+            </div>
+          </fieldset>
+        )}
+        {special && (
+          <label className="f" style={{ maxWidth: 360 }}><span>公司</span>
+            <select value={company} onChange={(e) => setCompany(e.target.value)}>
+              {dir.companies.map((c) => <option key={c.id} value={c.id}>{c.parent_company_id ? "　└ " : ""}{c.name}</option>)}
+            </select></label>
+        )}
+      </div>
+      {special && kase === "prepay" && <PrepayForm company={company} docDate={docDate} setDocDate={setDocDate} />}
+      {special && kase === "allowance" && <AllowanceForm company={company} docDate={docDate} setDocDate={setDocDate} />}
+      {special && kase === "on_behalf" && <OnBehalfForm company={company} docDate={docDate} setDocDate={setDocDate} onUseGeneral={useGeneral} />}
+      {!special && <div className="row">
         <form className="card grow pad stack" style={{ gap: 18 }} aria-label="單據內容" onSubmit={(e) => { e.preventDefault(); save(true); }}>
           <div className="form-grid">
-            <div className="f"><span id="kind-l">類型</span>
-              <div className="seg" role="group" aria-labelledby="kind-l">
-                {(Object.keys(KIND_LABEL) as Kind[]).map((k) => (
-                  <button type="button" key={k} aria-pressed={kind === k} onClick={() => { setKind(k); setLinesTouched(false); }}>{KIND_LABEL[k]}</button>
-                ))}
-              </div>
-            </div>
             <label className="f"><span>公司</span>
               <select value={company} onChange={(e) => setCompany(e.target.value)}>
                 {dir.companies.map((c) => <option key={c.id} value={c.id}>{c.parent_company_id ? "　└ " : ""}{c.name}</option>)}
@@ -229,6 +292,28 @@ export default function NewEntryPage() {
             </div>
           )}
 
+          {prepays.length > 0 && (
+            <section className="ai stack" aria-label="未沖抵的預付款" style={{ gap: 8 }}>
+              <div style={{ fontWeight: 600 }}>{cpMatch?.name} 有 {prepays.length} 筆預付款還沒沖抵，要用在這張發票嗎？</div>
+              <div className="tbl-wrap"><table>
+                <thead><tr><th>沖抵</th><th>預付日</th><th>說明</th><th className="r">可沖抵</th><th className="r">本次沖抵</th></tr></thead>
+                <tbody>{prepays.map((p) => (
+                  <tr key={p.document_id}>
+                    <td><input type="checkbox" aria-label={`沖抵 ${p.doc_date} 預付款`} checked={p.document_id in usePre}
+                               onChange={(e) => setUsePre((u) => { const n = { ...u }; if (e.target.checked) n[p.document_id] = String(Math.min(p.remaining, Math.max(0, totalN - preTotal))); else delete n[p.document_id]; return n; })} /></td>
+                    <td className="num">{p.doc_date}</td><td>{p.memo || "—"}{!p.paid && <> <Tag kind="warn">尚未付款</Tag></>}</td>
+                    <td className="num r">{money(p.remaining)}</td>
+                    <td className="r"><input className="amt" style={{ width: 120 }} inputMode="numeric" aria-label="本次沖抵金額"
+                               disabled={!(p.document_id in usePre)} value={usePre[p.document_id] ?? ""}
+                               onChange={(e) => setUsePre((u) => ({ ...u, [p.document_id]: e.target.value }))} /></td>
+                  </tr>))}</tbody>
+              </table></div>
+              {preTotal > 0 && <div className="small" style={{ textAlign: "right" }}>
+                發票 <span className="num">{money(totalN)}</span> − 沖抵預付 <span className="num">{money(-preTotal, { zeroDash: false })}</span> ＝ 尚應付 <b className="num">{money(totalN - preTotal, { zeroDash: false })}</b></div>}
+              <div className="small">可以只沖一部分（訂金涵蓋兩張發票時，分兩次沖）。不在這裡沖，存檔後待確認也會提醒。</div>
+            </section>
+          )}
+
           {capex && <label className="f" style={{ maxWidth: 260 }}><span>耐用年限（月）</span>
             <input className="amt" inputMode="numeric" value={lifeMonths} onChange={(e) => setLifeMonths(e.target.value)} placeholder="例：36" />
             <span className="small">資本支出不進損益，系統每月自動提列折舊</span></label>}
@@ -258,7 +343,7 @@ export default function NewEntryPage() {
             <button type="button" className="btn sm" onClick={() => setLine(0, { category_code: suggestion.data.category_code })}>採用建議類別</button>
           )}
         </aside>
-      </div>
+      </div>}
     </>
   );
 }

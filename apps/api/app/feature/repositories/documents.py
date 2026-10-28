@@ -91,7 +91,7 @@ class DocumentRepository:
     def summary(self, *, today: date, **filters) -> dict[str, int]:
         """符合篩選條件的「全部」單據合計（不受分頁影響）。"""
         sub = self._filtered(**filters).subquery()
-        outstanding = func.coalesce(sub.c.settle_amount, 0) - sub.c.settled_amount
+        outstanding = func.coalesce(sub.c.settle_amount, 0) - sub.c.settled_amount - sub.c.offset_amount
         is_open = sub.c.settle_status.in_(("open", "partial"))
         overdue = and_(is_open, sub.c.due_date < today, outstanding > 0)
         ic = select(Counterparty.id).where(Counterparty.is_intercompany.is_(True)).scalar_subquery()
@@ -219,7 +219,7 @@ class DocumentRepository:
     def has_lines(self, *, company_id: str, period: str, source_kind: str | None = None,
                   store_id: str | None = None, category_code: str | None = None,
                   counterparty_id: uuid.UUID | None = None, exclude_doc_types: tuple[str, ...] = ()) -> bool:
-        stmt = select(func.count()).select_from(DocumentLine).join(Document).where(
+        stmt = select(func.count()).select_from(DocumentLine).join(Document, Document.id == DocumentLine.document_id).where(
             Document.status == "posted", DocumentLine.company_id == company_id, DocumentLine.period_key == period)
         if source_kind:
             stmt = stmt.where(Document.source_kind == source_kind)
@@ -236,7 +236,7 @@ class DocumentRepository:
     def sum_lines(self, *, company_id: str, periods: list[str], category_code: str,
                   store_id: str | None, counterparty_id: uuid.UUID | None,
                   doc_types: tuple[str, ...] = ("payable", "receivable", "journal")) -> dict[str, int]:
-        stmt = (select(DocumentLine.period_key, func.sum(DocumentLine.amount)).join(Document)
+        stmt = (select(DocumentLine.period_key, func.sum(DocumentLine.amount)).join(Document, Document.id == DocumentLine.document_id)
                 .where(Document.status == "posted", DocumentLine.company_id == company_id,
                        DocumentLine.period_key.in_(periods), DocumentLine.category_code == category_code,
                        Document.doc_type.in_(doc_types), Document.relation.is_(None))

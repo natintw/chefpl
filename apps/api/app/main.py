@@ -9,13 +9,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.entry import integration, routes
+from app.entry import integration, routes, routes_offsets
 from app.errors import AppError
 
 log = logging.getLogger("ledger")
 
 app = FastAPI(title="帳務損益系統 API", version="0.1.0",
               description="合約：contracts/openapi.yaml（使用者端）、contracts/integration-cashflow.yaml（系統端）")
+app.include_router(routes_offsets.router)  # 先註冊：/documents/lookup 要比 /documents/{doc_id} 先比對
 app.include_router(routes.router)
 app.include_router(integration.router)
 

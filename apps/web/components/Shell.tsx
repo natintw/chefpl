@@ -16,6 +16,7 @@ const NAV: { group: string; items: { href: string; label: string; badge?: boolea
   ] },
   { group: "作業", items: [
     { href: "/imports", label: "匯入中心", roles: ["admin", "accountant"] },
+    { href: "/vendor-master", label: "廠商主檔", roles: ["admin", "accountant"] },
     { href: "/vendors", label: "廠商類別", roles: ["admin", "accountant"] },
     { href: "/review", label: "待確認", badge: true, roles: ["admin", "accountant"] },
     { href: "/close", label: "月結", roles: ["admin", "accountant"] },

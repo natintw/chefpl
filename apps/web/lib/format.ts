@@ -39,6 +39,11 @@ export const SOURCE_LABEL: Record<string, string> = {
   advance: "預收", system: "系統", opening: "開帳",
 };
 
+export const DOC_TYPE_LABEL: Record<string, string> = {
+  payable: "應付", receivable: "應收", accrual: "預估", advance_receipt: "預收", journal: "調整",
+  prepayment: "預付款", allowance: "折讓",
+};
+
 export const SETTLE_LABEL: Record<string, [string, string]> = {
   open: ["未付", "t-neg"], partial: ["部分付款", "t-warn"], settled: ["已付", "t-ok"], over: ["溢付", "t-warn"],
   not_applicable: ["不適用", "t-est"],
@@ -47,6 +52,7 @@ export const SETTLE_LABEL: Record<string, [string, string]> = {
 /** 應收、預收用「收」，其他用「付」 */
 export function settleLabel(status: string, docType?: string): [string, string] {
   const [label, cls] = SETTLE_LABEL[status] || [status, "t-est"];
+  if (docType === "allowance") return status === "settled" ? ["已沖抵", "t-ok"] : status === "open" ? ["廠商欠我們", "t-warn"] : [label, cls];
   return docType === "receivable" || docType === "advance_receipt" ? [label.replace("付", "收"), cls] : [label, cls];
 }
 
@@ -56,4 +62,6 @@ export const REVIEW_LABEL: Record<string, string> = {
   recurring_ending: "固定費用到期", b99_open: "B99 待改歸", capex_life_needed: "資本支出", advance_due: "預收到期",
   accrual_match: "預估對應", provision_leftover: "預提剩餘", late_document: "晚到單據", import_warning: "匯入警告",
   intercompany_fund_mismatch: "集團內資金不一致",
+  prepayment_match: "待沖抵預付", prepayment_overdue: "預付逾期未沖抵", ap_sheet_netted: "應付表已扣訂金",
+  allowance_unmatched: "折讓找不到原單", invoice_buyer_mismatch: "發票抬頭不符", vendor_tax_id_missing: "廠商缺統編",
 };
